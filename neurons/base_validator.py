@@ -9,18 +9,65 @@ from typing import List
 import bittensor as bt
 import torch
 
-from neuron import BaseNeuron
 from config import check_config
 
 
-class BaseValidatorNeuron(BaseNeuron, ABC):
+class BaseValidatorNeuron(ABC):
     """
     Base class for Bittensor validators. Your validator should inherit from this class.
     """
 
+    config: bt.config
+    """Copy of the original config."""
+    uid: int
+    """Each miner gets a unique identity (UID) in the network for differentiation."""
+    device: torch.device
+    """Device to run computations on."""
+    wallet: bt.wallet
+    """The wallet holds the cryptographic key pairs for the miner."""
+    subtensor: bt.subtensor
+    """The subtensor is our connection to the Bittensor blockchain."""
+    metagraph: bt.metagraph
+    """The metagraph holds the state of the network, letting us know about other validators and miners."""
+    moving_averaged_scores: torch.Tensor
+    """1D (vector) with weights for each neuron on the subnet."""
+
     def __init__(self, config: bt.config):
         self.config: bt.config = copy.deepcopy(config)
         check_config(config)
+        bt.logging(config=config, logging_dir=config.full_path)
+
+        self.device = torch.device(self.config.neuron.device)
+        if (
+            self.device.type.lower().startswith("cuda")
+            and not torch.cuda.is_available()
+        ):
+            bt.logging.error(
+                f"{self.device.type} device is selected while CUDA is not available"
+            )
+            exit()
+
+        self.wallet = bt.wallet(config=self.config)
+        bt.logging.info(f"Wallet: {self.wallet}")
+
+        self.subtensor = bt.subtensor(config=self.config)
+        bt.logging.info(f"Subtensor: {self.subtensor}")
+
+        self.check_for_registration()
+
+        self.metagraph = bt.metagraph(
+            netuid=self.config.netuid, network=self.subtensor.network, sync=False
+        )  # Make sure not to sync without passing subtensor
+        self.metagraph.sync(subtensor=self.subtensor)  # Sync metagraph with subtensor.
+        bt.logging.info(f"Metagraph: {self.metagraph}")
+
+        self.moving_averaged_scores = torch.zeros(self.metagraph.n).to(self.device)
+
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        bt.logging.info(
+            f"Running neuron on subnet: {self.config.netuid} with uid {self.uid} "
+            f"using network: {self.subtensor.chain_endpoint}"
+        )
 
         return  # mx
 
@@ -66,7 +113,7 @@ class BaseValidatorNeuron(BaseNeuron, ABC):
         parser.add_argument(
             "--neuron.device",
             type=str,
-            help="Device to run on (cpu/gpu).",
+            help="Device to run on (cpu/cuda:%d).",
             default="cpu",
         )
 
@@ -111,6 +158,17 @@ class BaseValidatorNeuron(BaseNeuron, ABC):
             help="The maximum number of TAO allowed to query a validator with a vpermit.",
             default=4096,
         )
+
+    def check_for_registration(self):
+        if not self.subtensor.is_hotkey_registered(
+            netuid=self.config.netuid,
+            hotkey_ss58=self.wallet.hotkey.ss58_address,
+        ):
+            bt.logging.error(
+                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
+                f" Please register the hotkey using `btcli subnets register` before trying again."
+            )
+            exit()
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
