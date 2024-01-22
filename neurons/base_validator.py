@@ -31,6 +31,11 @@ class BaseValidatorNeuron(ABC):
     """The metagraph holds the state of the network, letting us know about other validators and miners."""
     moving_averaged_scores: torch.Tensor
     """1D (vector) with weights for each neuron on the subnet."""
+    is_running: bool = False
+    """Indicates whether background thread is running."""
+    should_exit: bool = False
+    """Indicates whether background thread should stop."""
+    thread: threading.Thread | None = None
 
     def __init__(self, config: bt.config):
         self.config: bt.config = copy.deepcopy(config)
@@ -53,7 +58,7 @@ class BaseValidatorNeuron(ABC):
         self.subtensor = bt.subtensor(config=self.config)
         bt.logging.info(f"Subtensor: {self.subtensor}")
 
-        self.check_for_registration()
+        self._check_for_registration()
 
         self.metagraph = bt.metagraph(
             netuid=self.config.netuid, network=self.subtensor.network, sync=False
@@ -65,101 +70,45 @@ class BaseValidatorNeuron(ABC):
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(
-            f"Running neuron on subnet: {self.config.netuid} with uid {self.uid} "
+            f"Running neuron on subnet {self.config.netuid} with uid {self.uid} "
             f"using network: {self.subtensor.chain_endpoint}"
         )
 
-        return  # mx
+        # # Save a copy of the hotkeys to local memory.
+        # self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+        #
+        # # Dendrite lets us send messages to other nodes (axons) in the network.
+        # self.dendrite = bt.dendrite(wallet=self.wallet)
+        # bt.logging.info(f"Dendrite: {self.dendrite}")
+        #
+        # # Set up initial scoring weights for validation
+        # bt.logging.info("Building validation weights.")
+        # self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+        #
+        # # Init sync with the network. Updates the metagraph.
+        # self.sync()
+        #
+        # # Serve axon to enable external connections.
+        # if not self.config.neuron.axon_off:
+        #     self.serve_axon()
+        # else:
+        #     bt.logging.warning("axon off, not serving ip to chain.")
+        #
+        # # Create asyncio event loop to manage async tasks.
+        # self.loop = asyncio.get_event_loop()
+        #
+        # # Instantiate runners
+        # self.thread: threading.Thread = None
+        # self.lock = asyncio.Lock()
 
-        super().__init__(config=config)
+    def __enter__(self):
+        self._run_in_background_thread()
+        return self
 
-        # Save a copy of the hotkeys to local memory.
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._stop_background_thread()
 
-        # Dendrite lets us send messages to other nodes (axons) in the network.
-        self.dendrite = bt.dendrite(wallet=self.wallet)
-        bt.logging.info(f"Dendrite: {self.dendrite}")
-
-        # Set up initial scoring weights for validation
-        bt.logging.info("Building validation weights.")
-        self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
-
-        # Init sync with the network. Updates the metagraph.
-        self.sync()
-
-        # Serve axon to enable external connections.
-        if not self.config.neuron.axon_off:
-            self.serve_axon()
-        else:
-            bt.logging.warning("axon off, not serving ip to chain.")
-
-        # Create asyncio event loop to manage async tasks.
-        self.loop = asyncio.get_event_loop()
-
-        # Instantiate runners
-        self.should_exit: bool = False
-        self.is_running: bool = False
-        self.thread: threading.Thread = None
-        self.lock = asyncio.Lock()
-
-    @staticmethod
-    def add_args(parser: argparse.ArgumentParser):
-        """
-        Add Validator specific arguments.
-        """
-        # Netuid Arg: The netuid of the subnet to connect to.
-        parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
-
-        parser.add_argument(
-            "--neuron.device",
-            type=str,
-            help="Device to run on (cpu/cuda:%d).",
-            default="cpu",
-        )
-
-        parser.add_argument(
-            "--neuron.epoch_length",
-            type=int,
-            help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-            default=100,
-        )
-
-        parser.add_argument(
-            "--neuron.num_concurrent_forwards",
-            type=int,
-            help="The number of concurrent forwards running at any time.",
-            default=1,
-        )
-
-        parser.add_argument(
-            "--neuron.sample_size",
-            type=int,
-            help="The number of miners to query in a single step.",
-            default=10,
-        )
-
-        parser.add_argument(
-            "--neuron.disable_set_weights",
-            action="store_true",
-            help="Disables setting weights.",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--neuron.moving_average_alpha",
-            type=float,
-            help="Moving average alpha parameter, how much to add of the new observation.",
-            default=0.05,
-        )
-
-        parser.add_argument(
-            "--neuron.vpermit_tao_limit",
-            type=int,
-            help="The maximum number of TAO allowed to query a validator with a vpermit.",
-            default=4096,
-        )
-
-    def check_for_registration(self):
+    def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
@@ -170,31 +119,30 @@ class BaseValidatorNeuron(ABC):
             )
             exit()
 
-    def serve_axon(self):
-        """Serve axon to enable external connections."""
+    def _run_in_background_thread(self):
+        """
+        Starts the validator's operations in a background thread upon entering the context.
+        This method facilitates the use of the validator in a 'with' statement.
+        """
+        if self.is_running:
+            return
+        bt.logging.debug("Starting validator in a background thread.")
+        self.should_exit = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+        self.is_running = True
+        bt.logging.debug("Background thread started.")
 
-        bt.logging.info("serving ip to chain...")
-        try:
-            self.axon = bt.axon(wallet=self.wallet, config=self.config)
-
-            try:
-                self.subtensor.serve_axon(
-                    netuid=self.config.netuid,
-                    axon=self.axon,
-                )
-            except Exception as e:
-                bt.logging.error(f"Failed to serve Axon with exception: {e}")
-                pass
-
-        except Exception as e:
-            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
-            pass
-
-    async def concurrent_forward(self):
-        coroutines = [
-            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
-        ]
-        await asyncio.gather(*coroutines)
+    def _stop_background_thread(self):
+        """
+        Stops the validator's background operations.
+        """
+        if self.is_running:
+            bt.logging.debug("Stopping the validator background thread.")
+            self.should_exit = True
+            self.thread.join(5)
+            self.is_running = False
+            bt.logging.debug("Background thread stopped.")
 
     def run(self):
         return  # mx
@@ -254,53 +202,31 @@ class BaseValidatorNeuron(ABC):
             bt.logging.error("Error during validation", str(err))
             bt.logging.debug(print_exception(type(err), err, err.__traceback__))
 
-    def run_in_background_thread(self):
-        """
-        Starts the validator's operations in a background thread upon entering the context.
-        This method facilitates the use of the validator in a 'with' statement.
-        """
-        if not self.is_running:
-            bt.logging.debug("Starting validator in background thread.")
-            self.should_exit = False
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
-            self.is_running = True
-            bt.logging.debug("Started")
+    def serve_axon(self):
+        """Serve axon to enable external connections."""
 
-    def stop_run_thread(self):
-        """
-        Stops the validator's operations that are running in the background thread.
-        """
-        if self.is_running:
-            bt.logging.debug("Stopping validator in background thread.")
-            self.should_exit = True
-            self.thread.join(5)
-            self.is_running = False
-            bt.logging.debug("Stopped")
+        bt.logging.info("serving ip to chain...")
+        try:
+            self.axon = bt.axon(wallet=self.wallet, config=self.config)
 
-    def __enter__(self):
-        self.run_in_background_thread()
-        return self
+            try:
+                self.subtensor.serve_axon(
+                    netuid=self.config.netuid,
+                    axon=self.axon,
+                )
+            except Exception as e:
+                bt.logging.error(f"Failed to serve Axon with exception: {e}")
+                pass
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        """
-        Stops the validator's background operations upon exiting the context.
-        This method facilitates the use of the validator in a 'with' statement.
+        except Exception as e:
+            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
+            pass
 
-        Args:
-            exc_type: The type of the exception that caused the context to be exited.
-                      None if the context was exited without an exception.
-            exc_value: The instance of the exception that caused the context to be exited.
-                       None if the context was exited without an exception.
-            traceback: A traceback object encoding the stack trace.
-                       None if the context was exited without an exception.
-        """
-        if self.is_running:
-            bt.logging.debug("Stopping validator in background thread.")
-            self.should_exit = True
-            self.thread.join(5)
-            self.is_running = False
-            bt.logging.debug("Stopped")
+    async def concurrent_forward(self):
+        coroutines = [
+            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
+        ]
+        await asyncio.gather(*coroutines)
 
     def set_weights(self):
         """
@@ -441,3 +367,60 @@ class BaseValidatorNeuron(ABC):
         self.step = state["step"]
         self.scores = state["scores"]
         self.hotkeys = state["hotkeys"]
+
+    @staticmethod
+    def add_args(parser: argparse.ArgumentParser):
+        """
+        Add Validator specific arguments.
+        """
+        # Netuid Arg: The netuid of the subnet to connect to.
+        parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
+
+        parser.add_argument(
+            "--neuron.device",
+            type=str,
+            help="Device to run on (cpu/cuda:%d).",
+            default="cpu",
+        )
+
+        parser.add_argument(
+            "--neuron.epoch_length",
+            type=int,
+            help="The default epoch length (how often we set weights, measured in 12 second blocks).",
+            default=100,
+        )
+
+        parser.add_argument(
+            "--neuron.num_concurrent_forwards",
+            type=int,
+            help="The number of concurrent forwards running at any time.",
+            default=1,
+        )
+
+        parser.add_argument(
+            "--neuron.sample_size",
+            type=int,
+            help="The number of miners to query in a single step.",
+            default=10,
+        )
+
+        parser.add_argument(
+            "--neuron.disable_set_weights",
+            action="store_true",
+            help="Disables setting weights.",
+            default=False,
+        )
+
+        parser.add_argument(
+            "--neuron.moving_average_alpha",
+            type=float,
+            help="Moving average alpha parameter, how much to add of the new observation.",
+            default=0.05,
+        )
+
+        parser.add_argument(
+            "--neuron.vpermit_tao_limit",
+            type=int,
+            help="The maximum number of TAO allowed to query a validator with a vpermit.",
+            default=4096,
+        )
