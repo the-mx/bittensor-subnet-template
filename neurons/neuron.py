@@ -6,9 +6,3 @@ from template.utils.misc import ttl_get_block
 
 class BaseNeuron(ABC):
     spec_version: int = spec_version
-
-
-
-
-
-

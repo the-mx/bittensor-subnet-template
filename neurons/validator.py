@@ -29,10 +29,14 @@ def main():
     config = read_config(Validator)
     bt.logging.info(f"Starting with config: {config}")
 
-    with Validator(config):
+    with Validator(config) as validator:
         while True:
             bt.logging.debug("Validator running...", time.time())
             time.sleep(60)
+
+            if validator.should_exit.is_set():
+                bt.logging.debug("Stopping the validator")
+                break
 
 
 # The main function parses the configuration and runs the validator.
