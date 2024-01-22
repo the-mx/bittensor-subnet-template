@@ -3,7 +3,6 @@ import time
 import bittensor as bt
 
 from neurons.base_validator import BaseValidatorNeuron
-from template.validator import forward
 from config import read_config
 from protocol import Dummy
 

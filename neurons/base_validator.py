@@ -115,7 +115,6 @@ class BaseValidatorNeuron(ABC):
         # Create asyncio event loop to manage async tasks.
         self.loop = asyncio.get_event_loop()
 
-
     def __enter__(self):
         self._run_in_background_thread()
         return self
@@ -140,7 +139,8 @@ class BaseValidatorNeuron(ABC):
     def get_miners(self) -> List[bt.AxonInfo]:
         """While there is no obvious way to distinguish miners from validators,
         we have to forward pass to all of them."""
-        return [info for info, active in zip(self.metagraph.axons, self.metagraph.active) if active]
+        # return [info for info, active in zip(self.metagraph.axons, self.metagraph.active) if active]
+        return list(self.metagraph.axons)
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
@@ -203,7 +203,7 @@ class BaseValidatorNeuron(ABC):
 
         try:
             while True:
-                bt.logging.debug(f"Step {self.step} at block {self.block}")
+                bt.logging.debug(f"Step {self.step} at block {self.block()}")
 
                 self._sync()  # Check that the validator is registered on the network.
 
