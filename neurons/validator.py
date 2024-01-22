@@ -5,6 +5,7 @@ import bittensor as bt
 from neurons.base_validator import BaseValidatorNeuron
 from template.validator import forward
 from config import read_config
+from protocol import Dummy
 
 
 class Validator(BaseValidatorNeuron):
@@ -22,7 +23,25 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
-        return await forward(self)
+        miners = self.get_miners()
+        # miner_uids = get_random_uids(self, k=self.read_config.neuron.sample_size)
+
+        responses = self.dendrite.query(
+            axons=miners,
+            synapse=Dummy(dummy_input=self.step),
+            deserialize=True,
+        )
+
+        # Log the results for monitoring purposes.
+        bt.logging.info(f"Received responses: {responses}")
+
+        # TODO(developer): Define how the validator scores responses.
+        # Adjust the scores based on responses from miners.
+        # rewards = get_rewards(self, query=self.step, responses=responses)
+
+        # bt.logging.info(f"Scored responses: {rewards}")
+        # Update the scores based on the rewards. You may want to define your own update_scores function for custom behavior.
+        # self.update_scores(rewards, miner_uids)
 
 
 def main():

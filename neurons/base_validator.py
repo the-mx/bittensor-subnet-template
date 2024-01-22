@@ -1,10 +1,10 @@
+import abc
 import asyncio
 import argparse
 import copy
 import threading
 import time
 from abc import ABC
-from traceback import print_exception
 from typing import List
 
 import bittensor as bt
@@ -24,14 +24,22 @@ class BaseValidatorNeuron(ABC):
     """Each miner gets a unique identity (UID) in the network for differentiation."""
     device: torch.device
     """Device to run computations on."""
+
     wallet: bt.wallet
     """The wallet holds the cryptographic key pairs for the miner."""
     subtensor: bt.subtensor
     """The subtensor is our connection to the Bittensor blockchain."""
     metagraph: bt.metagraph
     """The metagraph holds the state of the network, letting us know about other validators and miners."""
+    axon: bt.axon | None = None
+    """Axon for external connections."""
+    dendrite: bt.dendrite | None = None
+
     moving_averaged_scores: torch.Tensor
     """1D (vector) with weights for each neuron on the subnet."""
+    hotkeys: List[str]
+    """A copy of metagraph.hotkeys."""
+
     is_background_thread_running: bool = False
     """Indicates whether background thread is running."""
     should_stop_background_thread: bool = False
@@ -39,6 +47,13 @@ class BaseValidatorNeuron(ABC):
     should_exit: threading.Event
     """Set in the background thread on errors. Should lead to the application stop."""
     thread: threading.Thread | None = None
+    """Background thread."""
+
+    step: int = 0
+    """Increased each time the validator sends probes to the miners."""
+
+    loop: asyncio.AbstractEventLoop
+    """Async loop."""
 
     _cached_block: int = 0
     _cached_block_time: float = 0.0
@@ -52,8 +67,8 @@ class BaseValidatorNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-            self.device.type.lower().startswith("cuda")
-            and not torch.cuda.is_available()
+                self.device.type.lower().startswith("cuda")
+                and not torch.cuda.is_available()
         ):
             raise RuntimeError(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -73,7 +88,11 @@ class BaseValidatorNeuron(ABC):
         self.metagraph.sync(subtensor=self.subtensor)  # Sync metagraph with subtensor.
         bt.logging.info(f"Metagraph: {self.metagraph}")
 
+        self.dendrite = bt.dendrite(wallet=self.wallet)
+        bt.logging.info(f"Dendrite: {self.dendrite}")
+
         self.moving_averaged_scores = torch.zeros(self.metagraph.n).to(self.device)
+        self.hotkeys = list(self.metagraph.hotkeys)
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(
@@ -83,31 +102,19 @@ class BaseValidatorNeuron(ABC):
 
         self.should_exit = threading.Event()
 
-        # # Save a copy of the hotkeys to local memory.
-        # self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-        #
-        # # Dendrite lets us send messages to other nodes (axons) in the network.
-        # self.dendrite = bt.dendrite(wallet=self.wallet)
-        # bt.logging.info(f"Dendrite: {self.dendrite}")
-        #
         # # Set up initial scoring weights for validation
         # bt.logging.info("Building validation weights.")
         # self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
-        #
-        # # Init sync with the network. Updates the metagraph.
-        # self.sync()
         #
         # # Serve axon to enable external connections.
         # if not self.config.neuron.axon_off:
         #     self.serve_axon()
         # else:
         #     bt.logging.warning("axon off, not serving ip to chain.")
-        #
-        # # Create asyncio event loop to manage async tasks.
-        # self.loop = asyncio.get_event_loop()
-        #
-        # # Instantiate runners
-        # self.lock = asyncio.Lock()
+
+        # Create asyncio event loop to manage async tasks.
+        self.loop = asyncio.get_event_loop()
+
 
     def __enter__(self):
         self._run_in_background_thread()
@@ -115,6 +122,12 @@ class BaseValidatorNeuron(ABC):
 
     def __exit__(self, exc_type, exc_value, traceback):
         self._stop_background_thread()
+
+    @abc.abstractmethod
+    def forward(self):
+        """Named after neural network forward propagation. This method sends a probe/test to the miners
+        to score them and assign weights."""
+        ...
 
     def block(self):
         cur_time = time.time()
@@ -124,10 +137,15 @@ class BaseValidatorNeuron(ABC):
 
         return self._cached_block
 
+    def get_miners(self) -> List[bt.AxonInfo]:
+        """While there is no obvious way to distinguish miners from validators,
+        we have to forward pass to all of them."""
+        return [info for info, active in zip(self.metagraph.axons, self.metagraph.active) if active]
+
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
+                netuid=self.config.netuid,
+                hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             raise RuntimeError(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
@@ -152,12 +170,15 @@ class BaseValidatorNeuron(ABC):
         """
         Stops the validator's background operations.
         """
-        if self.is_background_thread_running:
-            bt.logging.debug("Stopping the validator background thread.")
-            self.should_stop_background_thread = True
-            self.thread.join(30)
-            self.is_background_thread_running = False
-            bt.logging.debug("Background thread stopped.")
+        if not self.is_background_thread_running:
+            return
+        bt.logging.debug("Stopping the validator background thread.")
+        self.should_stop_background_thread = True
+        self.thread.join(30)
+        self.is_background_thread_running = False
+        if self.axon is not None:
+            self.axon.stop()
+        bt.logging.debug("Background thread stopped.")
 
     def _run(self):
         """
@@ -178,44 +199,41 @@ class BaseValidatorNeuron(ABC):
             KeyboardInterrupt: Upon a manual interruption.
             Exception: For unexpected issues during operation, with logs for diagnostics.
         """
-        self._sync()  # Check that validator is registered on the network.
+        bt.logging.info(f"Validator starting at block: {self.block()}")
 
-        bt.logging.info(f"Validator starting at block: {self.block}")
+        try:
+            while True:
+                bt.logging.debug(f"Step {self.step} at block {self.block}")
 
-        # # This loop maintains the validator's operations until intentionally stopped.
-        # try:
-        #     while True:
-        #         bt.logging.info(f"step({self.step}) block({self.block})")
-        #
-        #         # Run multiple forwards concurrently.
-        #         self.loop.run_until_complete(self.concurrent_forward())
-        #
-        #         # Check if we should exit.
-        #         if self.should_stop_background_thread:
-        #             break
-        #
-        #         # Sync metagraph and potentially set weights.
-        #         self._sync()
-        #
-        #         self.step += 1
-        #
-        # # If someone intentionally stops the validator, it'll safely terminate operations.
-        # except KeyboardInterrupt:
-        #     self.axon.stop()
-        #     bt.logging.success("Validator killed by keyboard interrupt.")
-        #     exit()
-        #
-        # # In case of unforeseen errors, the validator will log the error and continue operations.
-        # except Exception as err:
-        #     bt.logging.error("Error during validation", str(err))
-        #     bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+                self._sync()  # Check that the validator is registered on the network.
+
+                if self.should_stop_background_thread:
+                    break
+
+                time.sleep(10)
+
+                self.loop.run_until_complete(self._concurrent_forward())
+
+                self.step += 1
+        except KeyboardInterrupt:
+            self.should_exit.set()
+            bt.logging.success("Validator killed by keyboard interrupt.")
+        except Exception:
+            self.should_exit.set()
+            bt.logging.exception("Error during validation")
+
+    async def _concurrent_forward(self):
+        coroutines = [
+            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
+        ]
+        await asyncio.gather(*coroutines)
 
     def _sync(self):
         # Ensure miner or validator hotkey is still registered on the network.
         self._check_for_registration()
 
         if self._should_sync_metagraph():
-            self.resync_metagraph()
+            self._resync_metagraph()
 
         if self._should_set_weights():
             self.set_weights()
@@ -228,8 +246,41 @@ class BaseValidatorNeuron(ABC):
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
         return (
-            self.block() - self.metagraph.last_update[self.uid]
+                self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
+
+    def _resync_metagraph(self):
+        """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
+
+        bt.logging.info("Resyncing metagraph")
+
+        # previous_metagraph = copy.deepcopy(self.metagraph)
+
+        # self.metagraph.sync(subtensor=self.subtensor)
+
+        # if previous_metagraph.axons == self.metagraph.axons:
+        #     return
+
+        # bt.logging.info(
+        #     "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
+        # )
+
+        # # Zero out all hotkeys that have been replaced.
+        # for uid, hotkey in enumerate(self.hotkeys):
+        #     if hotkey != self.metagraph.hotkeys[uid]:
+        #         self.scores[uid] = 0  # hotkey has been replaced
+        #
+        # # Check to see if the metagraph has changed size.
+        # # If so, we need to add new hotkeys and moving averages.
+        # if len(self.hotkeys) < len(self.metagraph.hotkeys):
+        #     # Update the size of the moving average scores.
+        #     new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
+        #     min_len = min(len(self.hotkeys), len(self.scores))
+        #     new_moving_average[:min_len] = self.scores[:min_len]
+        #     self.scores = new_moving_average
+        #
+        # # Update the hotkeys.
+        # self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
     def _should_set_weights(self) -> bool:
         return False
@@ -266,12 +317,6 @@ class BaseValidatorNeuron(ABC):
         except Exception as e:
             bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
             pass
-
-    async def concurrent_forward(self):
-        coroutines = [
-            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
-        ]
-        await asyncio.gather(*coroutines)
 
     def set_weights(self):
         """
@@ -334,43 +379,6 @@ class BaseValidatorNeuron(ABC):
         else:
             bt.logging.error("set_weights failed")
 
-    def resync_metagraph(self):
-        """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
-        bt.logging.info("Resyncing metagraph")
-
-        self.should_exit.set()
-        return
-
-        # Copies state of metagraph before syncing.
-        previous_metagraph = copy.deepcopy(self.metagraph)
-
-        # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
-
-        # Check if the metagraph axon info has changed.
-        if previous_metagraph.axons == self.metagraph.axons:
-            return
-
-        bt.logging.info(
-            "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
-        )
-        # Zero out all hotkeys that have been replaced.
-        for uid, hotkey in enumerate(self.hotkeys):
-            if hotkey != self.metagraph.hotkeys[uid]:
-                self.scores[uid] = 0  # hotkey has been replaced
-
-        # Check to see if the metagraph has changed size.
-        # If so, we need to add new hotkeys and moving averages.
-        if len(self.hotkeys) < len(self.metagraph.hotkeys):
-            # Update the size of the moving average scores.
-            new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
-            min_len = min(len(self.hotkeys), len(self.scores))
-            new_moving_average[:min_len] = self.scores[:min_len]
-            self.scores = new_moving_average
-
-        # Update the hotkeys.
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-
     def update_scores(self, rewards: torch.FloatTensor, uids: List[int]):
         """Performs exponential moving average on the scores based on the rewards received from the miners."""
 
@@ -391,7 +399,7 @@ class BaseValidatorNeuron(ABC):
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
         self.scores: torch.FloatTensor = alpha * scattered_rewards + (
-            1 - alpha
+                1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
@@ -400,24 +408,24 @@ class BaseValidatorNeuron(ABC):
         bt.logging.info("Saving validator state.")
 
         # Save the state of the validator to file.
-        torch.save(
-            {
-                "step": self.step,
-                "scores": self.scores,
-                "hotkeys": self.hotkeys,
-            },
-            self.config.neuron.full_path + "/state.pt",
-        )
+        # torch.save(
+        #     {
+        #         "step": self.step,
+        #         "scores": self.scores,
+        #         "hotkeys": self.hotkeys,
+        #     },
+        #     self.config.neuron.full_path + "/state.pt",
+        # )
 
     def load_state(self):
         """Loads the state of the validator from a file."""
         bt.logging.info("Loading validator state.")
 
         # Load the state of the validator from file.
-        state = torch.load(self.config.neuron.full_path + "/state.pt")
-        self.step = state["step"]
-        self.scores = state["scores"]
-        self.hotkeys = state["hotkeys"]
+        # state = torch.load(self.config.neuron.full_path + "/state.pt")
+        # self.step = state["step"]
+        # self.scores = state["scores"]
+        # self.hotkeys = state["hotkeys"]
 
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
