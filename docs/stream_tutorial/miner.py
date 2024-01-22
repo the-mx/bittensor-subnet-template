@@ -1,19 +1,18 @@
-import copy
-import time
-import asyncio
 import argparse
+import asyncio
+import copy
 import threading
+import time
 import traceback
 from abc import ABC, abstractmethod
 from functools import partial
-from starlette.types import Send
+from typing import Awaitable, Callable, Dict, List, Tuple, Union
 
 import bittensor as bt
-from transformers import GPT2Tokenizer
-from typing import List, Dict, Tuple, Union, Callable, Awaitable
-
+from config import check_config, get_config
 from protocol import StreamPrompting
-from config import get_config, check_config
+from starlette.types import Send
+from transformers import GPT2Tokenizer
 
 
 class StreamMiner(ABC):
@@ -60,9 +59,7 @@ class StreamMiner(ABC):
             bt.logging.info(f"Running miner on uid: {self.my_subnet_uid}")
 
         # The axon handles request processing, allowing validators to send this process requests.
-        self.axon = axon or bt.axon(
-            wallet=self.wallet, port=self.config.axon.port
-        )
+        self.axon = axon or bt.axon(wallet=self.wallet, port=self.config.axon.port)
         # Attach determiners which functions are called when servicing a request.
         bt.logging.info(f"Attaching forward function to axon.")
         print(f"Attaching forward function to axon. {self._prompt}")
@@ -162,9 +159,7 @@ class StreamMiner(ABC):
         self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
 
         # Start  starts the miner's axon, making it active on the network.
-        bt.logging.info(
-            f"Starting axon server on port: {self.config.axon.port}"
-        )
+        bt.logging.info(f"Starting axon server on port: {self.config.axon.port}")
         self.axon.start()
 
         # --- Run until should_exit = True.
@@ -350,9 +345,7 @@ class StreamingTemplateMiner(StreamMiner):
                 processing steps or modify how tokens are sent back to the client.
             """
             bt.logging.trace("HI. _PROMPT()")
-            input_ids = tokenizer(
-                text, return_tensors="pt"
-            ).input_ids.squeeze()
+            input_ids = tokenizer(text, return_tensors="pt").input_ids.squeeze()
             buffer = []
             bt.logging.debug(f"Input text: {text}")
             bt.logging.debug(f"Input ids: {input_ids}")

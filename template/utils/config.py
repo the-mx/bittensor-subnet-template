@@ -16,10 +16,11 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import os
-import torch
 import argparse
+import os
+
 import bittensor as bt
+import torch
 from loguru import logger
 
 
@@ -63,9 +64,7 @@ def add_args(cls, parser):
     # Netuid Arg: The netuid of the subnet to connect to.
     parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
 
-    neuron_type = (
-        "validator" if "miner" not in cls.__name__.lower() else "miner"
-    )
+    neuron_type = "validator" if "miner" not in cls.__name__.lower() else "miner"
 
     parser.add_argument(
         "--neuron.name",

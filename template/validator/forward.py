@@ -20,8 +20,8 @@
 import bittensor as bt
 
 from template.protocol import Dummy
-from template.validator.reward import get_rewards
 from template.utils.uids import get_random_uids
+from template.validator.reward import get_rewards
 
 
 async def forward(self):
@@ -34,9 +34,8 @@ async def forward(self):
         self (:obj:`bittensor.neuron.Neuron`): The neuron object which contains all the necessary state for the validator.
 
     """
-    # TODO(developer): Define how the validator selects a miner to query, how often, etc.
     # get_random_uids is an example method, but you can replace it with your own.
-    miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
+    miner_uids = get_random_uids(self, k=self.read_config.neuron.sample_size)
 
     # The dendrite client queries the network.
     responses = self.dendrite.query(

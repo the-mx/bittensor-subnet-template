@@ -15,13 +15,13 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import time
-import torch
 import asyncio
 import threading
+import time
 import traceback
 
 import bittensor as bt
+import torch
 
 from template.base.neuron import BaseNeuron
 
@@ -201,9 +201,7 @@ class BaseMinerNeuron(BaseNeuron):
             )
 
         except Exception as e:
-            bt.logging.error(
-                f"Failed to set weights on chain with exception: { e }"
-            )
+            bt.logging.error(f"Failed to set weights on chain with exception: { e }")
 
         bt.logging.info(f"Set weights: {chain_weights}")
 

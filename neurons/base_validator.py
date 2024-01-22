@@ -1,41 +1,29 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-
-import copy
-import torch
 import asyncio
+import argparse
+import copy
 import threading
-import bittensor as bt
-
-from typing import List
+from abc import ABC
 from traceback import print_exception
+from typing import List
 
-from template.base.neuron import BaseNeuron
+import bittensor as bt
+import torch
+
+from neuron import BaseNeuron
+from config import check_config
 
 
-class BaseValidatorNeuron(BaseNeuron):
+class BaseValidatorNeuron(BaseNeuron, ABC):
     """
     Base class for Bittensor validators. Your validator should inherit from this class.
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config: bt.config):
+        self.config: bt.config = copy.deepcopy(config)
+        check_config(config)
+
+        return  # mx
+
         super().__init__(config=config)
 
         # Save a copy of the hotkeys to local memory.
@@ -67,6 +55,63 @@ class BaseValidatorNeuron(BaseNeuron):
         self.thread: threading.Thread = None
         self.lock = asyncio.Lock()
 
+    @staticmethod
+    def add_args(parser: argparse.ArgumentParser):
+        """
+        Add Validator specific arguments.
+        """
+        # Netuid Arg: The netuid of the subnet to connect to.
+        parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
+
+        parser.add_argument(
+            "--neuron.device",
+            type=str,
+            help="Device to run on (cpu/gpu).",
+            default="cpu",
+        )
+
+        parser.add_argument(
+            "--neuron.epoch_length",
+            type=int,
+            help="The default epoch length (how often we set weights, measured in 12 second blocks).",
+            default=100,
+        )
+
+        parser.add_argument(
+            "--neuron.num_concurrent_forwards",
+            type=int,
+            help="The number of concurrent forwards running at any time.",
+            default=1,
+        )
+
+        parser.add_argument(
+            "--neuron.sample_size",
+            type=int,
+            help="The number of miners to query in a single step.",
+            default=10,
+        )
+
+        parser.add_argument(
+            "--neuron.disable_set_weights",
+            action="store_true",
+            help="Disables setting weights.",
+            default=False,
+        )
+
+        parser.add_argument(
+            "--neuron.moving_average_alpha",
+            type=float,
+            help="Moving average alpha parameter, how much to add of the new observation.",
+            default=0.05,
+        )
+
+        parser.add_argument(
+            "--neuron.vpermit_tao_limit",
+            type=int,
+            help="The maximum number of TAO allowed to query a validator with a vpermit.",
+            default=4096,
+        )
+
     def serve_axon(self):
         """Serve axon to enable external connections."""
 
@@ -84,19 +129,17 @@ class BaseValidatorNeuron(BaseNeuron):
                 pass
 
         except Exception as e:
-            bt.logging.error(
-                f"Failed to create Axon initialize with exception: {e}"
-            )
+            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
             pass
 
     async def concurrent_forward(self):
         coroutines = [
-            self.forward()
-            for _ in range(self.config.neuron.num_concurrent_forwards)
+            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
         ]
         await asyncio.gather(*coroutines)
 
     def run(self):
+        return  # mx
         """
         Initiates and manages the main loop for the miner on the Bittensor network. The main loop handles graceful shutdown on keyboard interrupts and logs unforeseen errors.
 
@@ -151,9 +194,7 @@ class BaseValidatorNeuron(BaseNeuron):
         # In case of unforeseen errors, the validator will log the error and continue operations.
         except Exception as err:
             bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(
-                print_exception(type(err), err, err.__traceback__)
-            )
+            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
 
     def run_in_background_thread(self):
         """
@@ -287,9 +328,7 @@ class BaseValidatorNeuron(BaseNeuron):
         # If so, we need to add new hotkeys and moving averages.
         if len(self.hotkeys) < len(self.metagraph.hotkeys):
             # Update the size of the moving average scores.
-            new_moving_average = torch.zeros((self.metagraph.n)).to(
-                self.device
-            )
+            new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
             min_len = min(len(self.hotkeys), len(self.scores))
             new_moving_average[:min_len] = self.scores[:min_len]
             self.scores = new_moving_average
