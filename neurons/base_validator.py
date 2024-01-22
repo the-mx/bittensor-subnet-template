@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import copy
 import threading
+import time
 from abc import ABC
 from traceback import print_exception
 from typing import List
@@ -37,6 +38,11 @@ class BaseValidatorNeuron(ABC):
     """Indicates whether background thread should stop."""
     thread: threading.Thread | None = None
 
+    _cached_block: int = 0
+    _cached_block_time: float = 0.0
+    _cached_block_ttl: float = 12.0
+    """Not to request the current block on each validator tick, it's value is cached for the next `ttl` seconds."""
+
     def __init__(self, config: bt.config):
         self.config: bt.config = copy.deepcopy(config)
         check_config(config)
@@ -44,8 +50,8 @@ class BaseValidatorNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-            self.device.type.lower().startswith("cuda")
-            and not torch.cuda.is_available()
+                self.device.type.lower().startswith("cuda")
+                and not torch.cuda.is_available()
         ):
             bt.logging.error(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -108,10 +114,18 @@ class BaseValidatorNeuron(ABC):
     def __exit__(self, exc_type, exc_value, traceback):
         self._stop_background_thread()
 
+    def block(self):
+        cur_time = time.time()
+        if cur_time > self._cached_block_time + self._cached_block_ttl:
+            self._cached_block = self.subtensor.get_current_block()
+            self._cached_block_time = cur_time
+
+        return self._cached_block
+
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
+                netuid=self.config.netuid,
+                hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             bt.logging.error(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
@@ -128,7 +142,7 @@ class BaseValidatorNeuron(ABC):
             return
         bt.logging.debug("Starting validator in a background thread.")
         self.should_exit = False
-        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         self.is_running = True
         bt.logging.debug("Background thread started.")
@@ -144,63 +158,93 @@ class BaseValidatorNeuron(ABC):
             self.is_running = False
             bt.logging.debug("Background thread stopped.")
 
-    def run(self):
-        return  # mx
+    def _run(self):
         """
-        Initiates and manages the main loop for the miner on the Bittensor network. The main loop handles graceful shutdown on keyboard interrupts and logs unforeseen errors.
+        Manages the Bittensor miner's loop, ensuring graceful shutdowns on interrupts and logging unexpected errors.
+        Key tasks performed by this function:
+        1. Checking the miner's registration status on the Bittensor network.
+        2. Persistently forwarding queries to network miners, rewarding and scoring their responses.
+        3. Regularly syncing with the chain to update the metagraph with the current network state and adjust weights.
 
-        This function performs the following primary tasks:
-        1. Check for registration on the Bittensor network.
-        2. Continuously forwards queries to the miners on the network, rewarding their responses and updating the scores accordingly.
-        3. Periodically resynchronizes with the chain; updating the metagraph with the latest network state and setting weights.
+        The 'forward' function, called at each loop iteration, is central to validation operations,
+        as it queries the network and appraises the responses.
 
-        The essence of the validator's operations is in the forward function, which is called every step. The forward function is responsible for querying the network and scoring the responses.
-
-        Note:
-            - The function leverages the global configurations set during the initialization of the miner.
-            - The miner's axon serves as its interface to the Bittensor network, handling incoming and outgoing requests.
+        Notes:
+        * Uses global configurations defined during miner setup.
+        * The miner's axon is the interface for Bittensor network communications.
 
         Raises:
-            KeyboardInterrupt: If the miner is stopped by a manual interruption.
-            Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
+            KeyboardInterrupt: Upon a manual interruption.
+            Exception: For unexpected issues during operation, with logs for diagnostics.
         """
-
-        # Check that validator is registered on the network.
-        self.sync()
-
-        bt.logging.info(
-            f"Running validator {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
-        )
+        self._sync()  # Check that validator is registered on the network.
 
         bt.logging.info(f"Validator starting at block: {self.block}")
 
-        # This loop maintains the validator's operations until intentionally stopped.
-        try:
-            while True:
-                bt.logging.info(f"step({self.step}) block({self.block})")
+        # # This loop maintains the validator's operations until intentionally stopped.
+        # try:
+        #     while True:
+        #         bt.logging.info(f"step({self.step}) block({self.block})")
+        #
+        #         # Run multiple forwards concurrently.
+        #         self.loop.run_until_complete(self.concurrent_forward())
+        #
+        #         # Check if we should exit.
+        #         if self.should_exit:
+        #             break
+        #
+        #         # Sync metagraph and potentially set weights.
+        #         self._sync()
+        #
+        #         self.step += 1
+        #
+        # # If someone intentionally stops the validator, it'll safely terminate operations.
+        # except KeyboardInterrupt:
+        #     self.axon.stop()
+        #     bt.logging.success("Validator killed by keyboard interrupt.")
+        #     exit()
+        #
+        # # In case of unforeseen errors, the validator will log the error and continue operations.
+        # except Exception as err:
+        #     bt.logging.error("Error during validation", str(err))
+        #     bt.logging.debug(print_exception(type(err), err, err.__traceback__))
 
-                # Run multiple forwards concurrently.
-                self.loop.run_until_complete(self.concurrent_forward())
+    def _sync(self):
+        # Ensure miner or validator hotkey is still registered on the network.
+        self._check_for_registration()
 
-                # Check if we should exit.
-                if self.should_exit:
-                    break
+        if self._should_sync_metagraph():
+            self.resync_metagraph()
 
-                # Sync metagraph and potentially set weights.
-                self.sync()
+        if self._should_set_weights():
+            self.set_weights()
 
-                self.step += 1
+        # Always save state.
+        self.save_state()
 
-        # If someone intentionally stops the validator, it'll safely terminate operations.
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
-            exit()
+    def _should_sync_metagraph(self):
+        """
+        Check if enough epoch blocks have elapsed since the last checkpoint to sync.
+        """
+        return (
+                self.block() - self.metagraph.last_update[self.uid]
+        ) > self.config.neuron.epoch_length
 
-        # In case of unforeseen errors, the validator will log the error and continue operations.
-        except Exception as err:
-            bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+    def _should_set_weights(self) -> bool:
+        return False
+
+        # # Don't set weights on initialization.
+        # if self.step == 0:
+        #     return False
+        #
+        # # Check if enough epoch blocks have elapsed since the last epoch.
+        # if self.config.neuron.disable_set_weights:
+        #     return False
+        #
+        # # Define appropriate logic for when set weights.
+        # return (
+        #         self.block() - self.metagraph.last_update[self.uid]
+        # ) > self.config.neuron.epoch_length
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -247,6 +291,9 @@ class BaseValidatorNeuron(ABC):
 
         bt.logging.debug("raw_weights", raw_weights)
         bt.logging.debug("raw_weight_uids", self.metagraph.uids.to("cpu"))
+
+        exit()
+
         # Process the raw weights to final_weights via subtensor limitations.
         (
             processed_weight_uids,
@@ -289,6 +336,8 @@ class BaseValidatorNeuron(ABC):
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
         bt.logging.info("resync_metagraph()")
+
+        exit()
 
         # Copies state of metagraph before syncing.
         previous_metagraph = copy.deepcopy(self.metagraph)
@@ -340,7 +389,7 @@ class BaseValidatorNeuron(ABC):
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
         self.scores: torch.FloatTensor = alpha * scattered_rewards + (
-            1 - alpha
+                1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
