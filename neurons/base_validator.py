@@ -5,6 +5,7 @@ import copy
 import random
 import threading
 import time
+import os
 from abc import ABC
 from typing import List
 
@@ -166,7 +167,6 @@ class BaseValidatorNeuron(ABC):
     def save_state(self):
         bt.logging.info("Saving validator state.")
 
-        # Save the state of the validator to file.
         torch.save(
             {
                 "step": self.step,
@@ -179,7 +179,10 @@ class BaseValidatorNeuron(ABC):
     def load_state(self):
         bt.logging.info("Loading validator state.")
 
-        # Load the state of the validator from file.
+        if not os.path.exists(self.config.neuron.full_path + "/state.pt"):
+            bt.logging.warning("No saved state found")
+            return
+
         state = torch.load(self.config.neuron.full_path + "/state.pt")
         self.step = state["step"]
         self.scores = state["scores"]
@@ -421,6 +424,13 @@ class BaseValidatorNeuron(ABC):
         parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
 
         parser.add_argument(
+            "--neuron.name",
+            type=str,
+            help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
+            default="validator",
+        )
+
+        parser.add_argument(
             "--neuron.device",
             type=str,
             help="Device to run on (cpu/cuda:%d).",
@@ -432,6 +442,20 @@ class BaseValidatorNeuron(ABC):
             type=int,
             help="The default epoch length (how often we set weights, measured in 12 second blocks).",
             default=100,
+        )
+
+        parser.add_argument(
+            "--neuron.events_retention_size",
+            type=str,
+            help="Events retention size.",
+            default="2 GB",
+        )
+
+        parser.add_argument(
+            "--neuron.dont_save_events",
+            action="store_true",
+            help="If set, we dont save events to a log file.",
+            default=False,
         )
 
         parser.add_argument(
