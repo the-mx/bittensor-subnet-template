@@ -10,9 +10,18 @@ from abc import ABC
 from typing import List
 
 import bittensor as bt
+from bittensor.utils import weight_utils
 import torch
 
 from config import check_config
+
+__version__ = "0.0.1"
+version_split = __version__.split(".")
+__spec_version__ = (
+        (1000 * int(version_split[0]))
+        + (10 * int(version_split[1]))
+        + (1 * int(version_split[2]))
+)
 
 
 class BaseValidatorNeuron(ABC):
@@ -282,7 +291,7 @@ class BaseValidatorNeuron(ABC):
             self._resync_metagraph()
 
         if self._should_set_weights():
-            self.set_weights()
+            self._set_weights()
 
         # Always save state.
         self.save_state()
@@ -291,6 +300,9 @@ class BaseValidatorNeuron(ABC):
         """
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
+        bt.logging.debug(
+            f"EXTRA: {self.block()} - {self.metagraph.last_update[self.uid]} ? {self.config.neuron.epoch_length}")
+
         return (
                 self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
@@ -323,20 +335,17 @@ class BaseValidatorNeuron(ABC):
         bt.logging.debug(f"New scores {self.scores}")
 
     def _should_set_weights(self) -> bool:
-        return False
+        if self.step == 0:
+            return False
 
-        # # Don't set weights on initialization.
-        # if self.step == 0:
-        #     return False
-        #
-        # # Check if enough epoch blocks have elapsed since the last epoch.
-        # if self.config.neuron.disable_set_weights:
-        #     return False
-        #
-        # # Define appropriate logic for when set weights.
-        # return (
-        #         self.block() - self.metagraph.last_update[self.uid]
-        # ) > self.config.neuron.epoch_length
+        # Check if enough epoch blocks have elapsed since the last epoch.
+        if self.config.neuron.disable_set_weights:
+            return False
+
+        # Define appropriate logic for when set weights.
+        return (
+                self.block() - self.metagraph.last_update[self.uid]
+        ) > self.config.neuron.epoch_length
 
     def _serve_axon(self):
         bt.logging.info("Axon is on...")
@@ -354,66 +363,66 @@ class BaseValidatorNeuron(ABC):
         except Exception as e:
             bt.logging.error(f"Failed to serve Axon with exception: {e}")
 
-    def set_weights(self):
+    def _set_weights(self):
         """
-        Sets the validator weights to the metagraph hotkeys based on the scores it has received from the miners. The weights determine the trust and incentive level the validator assigns to miner nodes on the network.
+        Sets the validator weights to the metagraph public keys based on scores it has received from the miners.
+        The weights determine the trust level and block propagation priority the validator assigns to each miner node.
+        Higher weighted miners have higher priority for block propagation checks and incentive rewards from the
+        validator's pool.
         """
 
-        # Check if self.scores contains any NaN values and log a warning if it does.
         if torch.isnan(self.scores).any():
-            bt.logging.warning(
-                f"Scores contain NaN values. This may be due to a lack of responses from miners, or a bug in your reward functions."
+            bt.logging.error(
+                f"Scores contain NaN values. This may be due to a lack of responses from miners, "
+                f"or a bug in your reward functions."
             )
+            return
 
         # Calculate the average reward for each uid across non-zero values.
         # Replace any NaN values with 0.
         raw_weights = torch.nn.functional.normalize(
-            self.moving_averaged_scores, p=1, dim=0
+            self.scores, p=1, dim=0
         )
 
-        bt.logging.debug("raw_weights", raw_weights)
-        bt.logging.debug("raw_weight_uids", self.metagraph.uids.to("cpu"))
+        bt.logging.debug(f"Raw weights: {raw_weights}")
 
-        raise RuntimeError("time to rest")
-
-        # Process the raw weights to final_weights via subtensor limitations.
         (
             processed_weight_uids,
             processed_weights,
-        ) = bt.utils.weight_utils.process_weights_for_netuid(
+        ) = weight_utils.process_weights_for_netuid(
             uids=self.metagraph.uids.to("cpu"),
             weights=raw_weights.to("cpu"),
             netuid=self.config.netuid,
             subtensor=self.subtensor,
             metagraph=self.metagraph,
         )
-        bt.logging.debug("processed_weights", processed_weights)
-        bt.logging.debug("processed_weight_uids", processed_weight_uids)
 
-        # Convert to uint16 weights and uids.
+        bt.logging.debug(f"Processed weights: {processed_weights}")
+
         (
-            uint_uids,
-            uint_weights,
+            converted_uids,
+            converted_weights,
         ) = bt.utils.weight_utils.convert_weights_and_uids_for_emit(
             uids=processed_weight_uids, weights=processed_weights
         )
-        bt.logging.debug("uint_weights", uint_weights)
-        bt.logging.debug("uint_uids", uint_uids)
+
+        bt.logging.debug(f"Converted weights: {converted_weights}")
+        bt.logging.debug(f"Converted uids: {converted_uids}")
 
         # Set the weights on chain via our subtensor connection.
         result = self.subtensor.set_weights(
             wallet=self.wallet,
             netuid=self.config.netuid,
-            uids=uint_uids,
-            weights=uint_weights,
+            uids=converted_uids,
+            weights=converted_weights,
             wait_for_finalization=False,
             wait_for_inclusion=True,
-            version_key=spec_version,
+            version_key=__spec_version__,
         )
         if result is True:
-            bt.logging.info("set_weights on chain successfully!")
+            bt.logging.info("Weights set on chain successfully")
         else:
-            bt.logging.error("set_weights failed")
+            bt.logging.error("Weights set failed")
 
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
