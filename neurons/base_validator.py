@@ -37,6 +37,8 @@ class BaseValidatorNeuron(ABC):
 
     moving_averaged_scores: torch.Tensor
     """1D (vector) with weights for each neuron on the subnet."""
+    scores: torch.Tensor
+    """1D (vector) with scores for each neuron on the subnet."""
     hotkeys: List[str]
     """A copy of metagraph.hotkeys."""
 
@@ -67,8 +69,8 @@ class BaseValidatorNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-                self.device.type.lower().startswith("cuda")
-                and not torch.cuda.is_available()
+            self.device.type.lower().startswith("cuda")
+            and not torch.cuda.is_available()
         ):
             raise RuntimeError(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -103,9 +105,9 @@ class BaseValidatorNeuron(ABC):
         self.should_exit = threading.Event()
 
         # # Set up initial scoring weights for validation
-        # bt.logging.info("Building validation weights.")
-        # self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
-        #
+        bt.logging.info("Building validation weights.")
+        self.scores = torch.zeros(self.metagraph.n).to(self.device)
+
         # # Serve axon to enable external connections.
         # if not self.config.neuron.axon_off:
         #     self.serve_axon()
@@ -139,12 +141,16 @@ class BaseValidatorNeuron(ABC):
     def get_miners(self) -> List[bt.AxonInfo]:
         """While there is no obvious way to distinguish miners from validators,
         we have to forward pass to all of them."""
-        return [info for info, stake in zip(self.metagraph.axons, self.metagraph.S) if stake < 1.0]
+        return [
+            info
+            for info, stake in zip(self.metagraph.axons, self.metagraph.S)
+            if stake < 1.0
+        ]
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
-                netuid=self.config.netuid,
-                hotkey_ss58=self.wallet.hotkey.ss58_address,
+            netuid=self.config.netuid,
+            hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             raise RuntimeError(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
@@ -245,7 +251,7 @@ class BaseValidatorNeuron(ABC):
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
         return (
-                self.block() - self.metagraph.last_update[self.uid]
+            self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
 
     def _resync_metagraph(self):
@@ -398,7 +404,7 @@ class BaseValidatorNeuron(ABC):
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
         self.scores: torch.FloatTensor = alpha * scattered_rewards + (
-                1 - alpha
+            1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 

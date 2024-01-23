@@ -1,6 +1,8 @@
 import time
+from typing import List
 
 import bittensor as bt
+import torch
 
 from neurons.base_validator import BaseValidatorNeuron
 from config import read_config
@@ -22,25 +24,33 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
+        # TODO: get random miners
         miners = self.get_miners()
-        # miner_uids = get_random_uids(self, k=self.read_config.neuron.sample_size)
 
+        # TODO: move probe creation to a separate module
         responses = await self.dendrite.forward(
             axons=miners,
             synapse=Dummy(dummy_input=self.step),
             deserialize=True,
         )
 
-        # Log the results for monitoring purposes.
         bt.logging.info(f"Received responses: {responses}")
 
-        # TODO(developer): Define how the validator scores responses.
-        # Adjust the scores based on responses from miners.
-        # rewards = get_rewards(self, query=self.step, responses=responses)
+        # TODO: move scoring to a separate module
+        scores = self.score_responses(responses=responses)
 
-        # bt.logging.info(f"Scored responses: {rewards}")
+        bt.logging.info(f"Scored responses: {scores}")
+
         # Update the scores based on the rewards. You may want to define your own update_scores function for custom behavior.
         # self.update_scores(rewards, miner_uids)
+
+    def score_response(self, synapse: Dummy) -> float:
+        return 1.0 if synapse.dummy_output == synapse.dummy_input * 2 else 0.0
+
+    def score_responses(self, responses: List[Dummy]) -> torch.FloatTensor:
+        return torch.FloatTensor(
+            [self.score_response(synapse) for synapse in responses]
+        ).to(self.device)
 
 
 def main():
