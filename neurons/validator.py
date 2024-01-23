@@ -28,7 +28,7 @@ class Validator(BaseValidatorNeuron):
 
         # TODO: move probe creation to a separate module
         responses = await self.dendrite.forward(
-            axons=[self.axon[uid] for uid in miner_uids],
+            axons=[self.metagraph.axons[uid] for uid in miner_uids],
             synapse=Dummy(dummy_input=self.step),
             deserialize=False,
         )
