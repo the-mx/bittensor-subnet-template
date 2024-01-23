@@ -139,8 +139,7 @@ class BaseValidatorNeuron(ABC):
     def get_miners(self) -> List[bt.AxonInfo]:
         """While there is no obvious way to distinguish miners from validators,
         we have to forward pass to all of them."""
-        # return [info for info, active in zip(self.metagraph.axons, self.metagraph.active) if active]
-        return list(self.metagraph.axons)
+        return [info for info, stake in zip(self.metagraph.axons, self.metagraph.S) if stake < 1.0]
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(

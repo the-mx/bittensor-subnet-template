@@ -25,7 +25,7 @@ class Validator(BaseValidatorNeuron):
         miners = self.get_miners()
         # miner_uids = get_random_uids(self, k=self.read_config.neuron.sample_size)
 
-        responses = self.dendrite.query(
+        responses = await self.dendrite.forward(
             axons=miners,
             synapse=Dummy(dummy_input=self.step),
             deserialize=True,
