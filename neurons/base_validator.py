@@ -223,9 +223,9 @@ class BaseValidatorNeuron(ABC):
         except KeyboardInterrupt:
             self.should_exit.set()
             bt.logging.success("Validator killed by keyboard interrupt.")
-        except Exception:
+        except Exception as e:
             self.should_exit.set()
-            bt.logging.exception("Error during validation")
+            bt.logging.exception(f"Error during validation: {e}")
 
     async def _concurrent_forward(self):
         coroutines = [
