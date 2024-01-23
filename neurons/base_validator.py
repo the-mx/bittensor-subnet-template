@@ -2,6 +2,7 @@ import abc
 import asyncio
 import argparse
 import copy
+import random
 import threading
 import time
 from abc import ABC
@@ -138,14 +139,12 @@ class BaseValidatorNeuron(ABC):
 
         return self._cached_block
 
-    def get_miners(self) -> List[bt.AxonInfo]:
-        """While there is no obvious way to distinguish miners from validators,
-        we have to forward pass to all of them."""
-        return [
-            info
-            for info, stake in zip(self.metagraph.axons, self.metagraph.S)
-            if stake < 1.0
-        ]
+    def get_random_miners_uids(self, sample_size=None) -> List[int]:
+        bt.logging.debug(f"all: {self.metagraph.axons} | {self.metagraph.S}")
+        miners = [uid for uid, stake in enumerate(self.metagraph.S) if stake < 1.0]
+        bt.logging.debug(f"miners: {miners}")
+        random.shuffle(miners)
+        return miners if sample_size is None else miners[:sample_size]
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
@@ -384,26 +383,26 @@ class BaseValidatorNeuron(ABC):
         else:
             bt.logging.error("set_weights failed")
 
-    def update_scores(self, rewards: torch.FloatTensor, uids: List[int]):
-        """Performs exponential moving average on the scores based on the rewards received from the miners."""
+    def update_scores(self, scores: torch.FloatTensor, miner_uids: List[int]):
+        """Updates moving average scores based on the recent received scores"""
 
         # Check if rewards contains NaN values.
-        if torch.isnan(rewards).any():
-            bt.logging.warning(f"NaN values detected in rewards: {rewards}")
+        if torch.isnan(scores).any():
+            bt.logging.warning(f"NaN values detected in rewards: {scores}")
             # Replace any NaN values in rewards with 0.
-            rewards = torch.nan_to_num(rewards, 0)
+            scores = torch.nan_to_num(scores, 0)
 
         # Compute forward pass rewards, assumes uids are mutually exclusive.
         # shape: [ metagraph.n ]
-        scattered_rewards: torch.FloatTensor = self.scores.scatter(
-            0, torch.tensor(uids).to(self.device), rewards
+        scattered_scores: torch.FloatTensor = self.scores.scatter(
+            0, torch.tensor(miner_uids).to(self.device), scores
         ).to(self.device)
-        bt.logging.debug(f"Scattered rewards: {rewards}")
+        bt.logging.debug(f"Scattered rewards: {scattered_scores}")
 
         # Update scores with rewards produced by this step.
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
-        self.scores: torch.FloatTensor = alpha * scattered_rewards + (
+        self.scores: torch.FloatTensor = alpha * scattered_scores + (
             1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")

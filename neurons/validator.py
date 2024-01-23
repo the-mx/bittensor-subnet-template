@@ -24,12 +24,11 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
-        # TODO: get random miners
-        miners = self.get_miners()
+        miner_uids = self.get_random_miners_uids(self.config.neuron.sample_size)
 
         # TODO: move probe creation to a separate module
         responses = await self.dendrite.forward(
-            axons=miners,
+            axons=[self.axon[uid] for uid in miner_uids],
             synapse=Dummy(dummy_input=self.step),
             deserialize=False,
         )
@@ -41,8 +40,7 @@ class Validator(BaseValidatorNeuron):
 
         bt.logging.info(f"Scored responses: {scores}")
 
-        # Update the scores based on the rewards. You may want to define your own update_scores function for custom behavior.
-        # self.update_scores(rewards, miner_uids)
+        self.update_scores(scores, miner_uids)
 
     def score_response(self, synapse: Dummy) -> float:
         if synapse.dummy_output is None:
