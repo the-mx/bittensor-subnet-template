@@ -68,8 +68,8 @@ class BaseValidatorNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-            self.device.type.lower().startswith("cuda")
-            and not torch.cuda.is_available()
+                self.device.type.lower().startswith("cuda")
+                and not torch.cuda.is_available()
         ):
             raise RuntimeError(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -100,12 +100,13 @@ class BaseValidatorNeuron(ABC):
 
         # # Set up initial scores.
         self.scores = torch.zeros(self.metagraph.n, device=self.device)
+        self.hotkeys = list(self.metagraph.hotkeys)
 
-        # # Serve axon to enable external connections.
-        # if not self.config.neuron.axon_off:
-        #     self.serve_axon()
-        # else:
-        #     bt.logging.warning("axon off, not serving ip to chain.")
+        # Serve axon to enable external connections.
+        if not self.config.neuron.axon_off:
+            self._serve_axon()
+        else:
+            bt.logging.warning("Axon is off, not serving ip to chain.")
 
         self.should_exit = threading.Event()
 
@@ -138,10 +139,56 @@ class BaseValidatorNeuron(ABC):
         random.shuffle(miners)
         return miners if sample_size is None else miners[:sample_size]
 
+    def update_scores(self, scores: torch.FloatTensor, miner_uids: List[int]):
+        """Updates moving average scores based on the recent received scores"""
+
+        # Check if rewards contains NaN values.
+        if torch.isnan(scores).any():
+            bt.logging.warning(f"NaN values detected in rewards: {scores}")
+            # Replace any NaN values in rewards with 0.
+            scores = torch.nan_to_num(scores, 0)
+
+        # Compute forward pass rewards, assumes uids are mutually exclusive.
+        # shape: [ metagraph.n ]
+        scattered_scores: torch.FloatTensor = self.scores.scatter(
+            0, torch.tensor(miner_uids, device=self.device), scores
+        ).to(self.device)
+        bt.logging.debug(f"Scattered rewards: {scattered_scores}")
+
+        # Update scores with rewards produced by this step.
+        # shape: [ metagraph.n ]
+        alpha: float = self.config.neuron.moving_average_alpha
+        self.scores: torch.FloatTensor = alpha * scattered_scores + (
+                1 - alpha
+        ) * self.scores.to(self.device)
+        bt.logging.debug(f"Updated moving avg scores: {self.scores}")
+
+    def save_state(self):
+        bt.logging.info("Saving validator state.")
+
+        # Save the state of the validator to file.
+        torch.save(
+            {
+                "step": self.step,
+                "scores": self.scores,
+                "hotkeys": self.hotkeys,
+            },
+            self.config.neuron.full_path + "/state.pt",
+        )
+
+    def load_state(self):
+        bt.logging.info("Loading validator state.")
+
+        # Load the state of the validator from file.
+        state = torch.load(self.config.neuron.full_path + "/state.pt")
+        self.step = state["step"]
+        self.scores = state["scores"]
+        self.hotkeys = state["hotkeys"]
+
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
+                netuid=self.config.netuid,
+                hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             raise RuntimeError(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
@@ -242,7 +289,7 @@ class BaseValidatorNeuron(ABC):
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
         return (
-            self.block() - self.metagraph.last_update[self.uid]
+                self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
 
     def _resync_metagraph(self):
@@ -250,15 +297,14 @@ class BaseValidatorNeuron(ABC):
 
         bt.logging.info("Resyncing metagraph")
 
-        previous_hotkeys = list(self.metagraph.hotkeys)
         self.metagraph.sync(subtensor=self.subtensor)
-        if previous_hotkeys == self.metagraph.hotkeys:
+        if self.hotkeys == self.metagraph.hotkeys:
             return
 
         bt.logging.info("Metagraph updated, re-syncing hotkeys and moving averages")
 
         prev_hotkey_to_score = {
-            hotkey: self.scores[uid] for uid, hotkey in enumerate(previous_hotkeys)
+            hotkey: self.scores[uid] for uid, hotkey in enumerate(self.hotkeys)
         }
         bt.logging.debug(f"Prev scores {prev_hotkey_to_score}")
 
@@ -289,25 +335,21 @@ class BaseValidatorNeuron(ABC):
         #         self.block() - self.metagraph.last_update[self.uid]
         # ) > self.config.neuron.epoch_length
 
-    def serve_axon(self):
-        """Serve axon to enable external connections."""
-
-        bt.logging.info("serving ip to chain...")
+    def _serve_axon(self):
+        bt.logging.info("Axon is on...")
         try:
             self.axon = bt.axon(wallet=self.wallet, config=self.config)
-
-            try:
-                self.subtensor.serve_axon(
-                    netuid=self.config.netuid,
-                    axon=self.axon,
-                )
-            except Exception as e:
-                bt.logging.error(f"Failed to serve Axon with exception: {e}")
-                pass
-
         except Exception as e:
-            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
-            pass
+            bt.logging.error(f"Failed to create Axon. Initialized with exception: {e}")
+            return
+
+        try:
+            self.subtensor.serve_axon(
+                netuid=self.config.netuid,
+                axon=self.axon,
+            )
+        except Exception as e:
+            bt.logging.error(f"Failed to serve Axon with exception: {e}")
 
     def set_weights(self):
         """
@@ -370,54 +412,6 @@ class BaseValidatorNeuron(ABC):
         else:
             bt.logging.error("set_weights failed")
 
-    def update_scores(self, scores: torch.FloatTensor, miner_uids: List[int]):
-        """Updates moving average scores based on the recent received scores"""
-
-        # Check if rewards contains NaN values.
-        if torch.isnan(scores).any():
-            bt.logging.warning(f"NaN values detected in rewards: {scores}")
-            # Replace any NaN values in rewards with 0.
-            scores = torch.nan_to_num(scores, 0)
-
-        # Compute forward pass rewards, assumes uids are mutually exclusive.
-        # shape: [ metagraph.n ]
-        scattered_scores: torch.FloatTensor = self.scores.scatter(
-            0, torch.tensor(miner_uids, device=self.device), scores
-        ).to(self.device)
-        bt.logging.debug(f"Scattered rewards: {scattered_scores}")
-
-        # Update scores with rewards produced by this step.
-        # shape: [ metagraph.n ]
-        alpha: float = self.config.neuron.moving_average_alpha
-        self.scores: torch.FloatTensor = alpha * scattered_scores + (
-            1 - alpha
-        ) * self.scores.to(self.device)
-        bt.logging.debug(f"Updated moving avg scores: {self.scores}")
-
-    def save_state(self):
-        """Saves the state of the validator to a file."""
-        bt.logging.info("Saving validator state.")
-
-        # Save the state of the validator to file.
-        # torch.save(
-        #     {
-        #         "step": self.step,
-        #         "scores": self.scores,
-        #         "hotkeys": self.hotkeys,
-        #     },
-        #     self.config.neuron.full_path + "/state.pt",
-        # )
-
-    def load_state(self):
-        """Loads the state of the validator from a file."""
-        bt.logging.info("Loading validator state.")
-
-        # Load the state of the validator from file.
-        # state = torch.load(self.config.neuron.full_path + "/state.pt")
-        # self.step = state["step"]
-        # self.scores = state["scores"]
-        # self.hotkeys = state["hotkeys"]
-
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
         """
@@ -466,6 +460,16 @@ class BaseValidatorNeuron(ABC):
             type=float,
             help="Moving average alpha parameter, how much to add of the new observation.",
             default=0.05,
+        )
+
+        # Note: the validator needs to serve an Axon with their IP or they may
+        #   be blacklisted by the firewall of serving peers on the network.
+        parser.add_argument(
+            "--neuron.axon_off",
+            "--axon_off",
+            action="store_true",
+            help="Set this flag to not attempt to serve an Axon.",
+            default=False,
         )
 
         parser.add_argument(

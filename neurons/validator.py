@@ -12,8 +12,7 @@ from protocol import Dummy
 class Validator(BaseValidatorNeuron):
     def __init__(self, config: bt.config):
         super(Validator, self).__init__(config)
-
-        # self.load_state()
+        self.load_state()
 
     async def forward(self):
         """
