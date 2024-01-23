@@ -36,8 +36,6 @@ class BaseValidatorNeuron(ABC):
     """Axon for external connections."""
     dendrite: bt.dendrite | None = None
 
-    moving_averaged_scores: torch.Tensor
-    """1D (vector) with weights for each neuron on the subnet."""
     scores: torch.Tensor
     """1D (vector) with scores for each neuron on the subnet."""
     hotkeys: List[str]
@@ -94,26 +92,22 @@ class BaseValidatorNeuron(ABC):
         self.dendrite = bt.dendrite(wallet=self.wallet)
         bt.logging.info(f"Dendrite: {self.dendrite}")
 
-        self.moving_averaged_scores = torch.zeros(self.metagraph.n).to(self.device)
-        self.hotkeys = list(self.metagraph.hotkeys)
-
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(
             f"Running neuron on subnet {self.config.netuid} with uid {self.uid} "
             f"using network: {self.subtensor.chain_endpoint}"
         )
 
-        self.should_exit = threading.Event()
-
-        # # Set up initial scoring weights for validation
-        bt.logging.info("Building validation weights.")
-        self.scores = torch.zeros(self.metagraph.n).to(self.device)
+        # # Set up initial scores.
+        self.scores = torch.zeros(self.metagraph.n, device=self.device)
 
         # # Serve axon to enable external connections.
         # if not self.config.neuron.axon_off:
         #     self.serve_axon()
         # else:
         #     bt.logging.warning("axon off, not serving ip to chain.")
+
+        self.should_exit = threading.Event()
 
         # Create asyncio event loop to manage async tasks.
         self.loop = asyncio.get_event_loop()
@@ -140,9 +134,7 @@ class BaseValidatorNeuron(ABC):
         return self._cached_block
 
     def get_random_miners_uids(self, sample_size=None) -> List[int]:
-        bt.logging.debug(f"all: {self.metagraph.axons} | {self.metagraph.S}")
         miners = [uid for uid, stake in enumerate(self.metagraph.S) if stake < 1.0]
-        bt.logging.debug(f"miners: {miners}")
         random.shuffle(miners)
         return miners if sample_size is None else miners[:sample_size]
 
@@ -258,33 +250,28 @@ class BaseValidatorNeuron(ABC):
 
         bt.logging.info("Resyncing metagraph")
 
-        # previous_metagraph = copy.deepcopy(self.metagraph)
+        previous_hotkeys = list(self.metagraph.hotkeys)
+        self.metagraph.sync(subtensor=self.subtensor)
+        if previous_hotkeys == self.metagraph.hotkeys:
+            return
 
-        # self.metagraph.sync(subtensor=self.subtensor)
+        bt.logging.info("Metagraph updated, re-syncing hotkeys and moving averages")
 
-        # if previous_metagraph.axons == self.metagraph.axons:
-        #     return
+        prev_hotkey_to_score = {
+            hotkey: self.scores[uid] for uid, hotkey in enumerate(previous_hotkeys)
+        }
+        bt.logging.debug(f"Prev scores {prev_hotkey_to_score}")
 
-        # bt.logging.info(
-        #     "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
-        # )
+        new_scores = torch.zeros(self.metagraph.n, device=self.device)
 
-        # # Zero out all hotkeys that have been replaced.
-        # for uid, hotkey in enumerate(self.hotkeys):
-        #     if hotkey != self.metagraph.hotkeys[uid]:
-        #         self.scores[uid] = 0  # hotkey has been replaced
-        #
-        # # Check to see if the metagraph has changed size.
-        # # If so, we need to add new hotkeys and moving averages.
-        # if len(self.hotkeys) < len(self.metagraph.hotkeys):
-        #     # Update the size of the moving average scores.
-        #     new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
-        #     min_len = min(len(self.hotkeys), len(self.scores))
-        #     new_moving_average[:min_len] = self.scores[:min_len]
-        #     self.scores = new_moving_average
-        #
-        # # Update the hotkeys.
-        # self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+        # Populate score values based on the previous hotkeys.
+        for uid, axon in enumerate(self.metagraph.axons):
+            new_scores[uid] = prev_hotkey_to_score.get(axon.hotkey, 0.0)
+
+        # Replace old score tensor with the new tensor.
+        self.scores = new_scores
+
+        bt.logging.debug(f"New scores {self.scores}")
 
     def _should_set_weights(self) -> bool:
         return False
@@ -395,7 +382,7 @@ class BaseValidatorNeuron(ABC):
         # Compute forward pass rewards, assumes uids are mutually exclusive.
         # shape: [ metagraph.n ]
         scattered_scores: torch.FloatTensor = self.scores.scatter(
-            0, torch.tensor(miner_uids).to(self.device), scores
+            0, torch.tensor(miner_uids, device=self.device), scores
         ).to(self.device)
         bt.logging.debug(f"Scattered rewards: {scattered_scores}")
 
