@@ -31,7 +31,7 @@ class Validator(BaseValidatorNeuron):
         responses = await self.dendrite.forward(
             axons=miners,
             synapse=Dummy(dummy_input=self.step),
-            deserialize=True,
+            deserialize=False,
         )
 
         bt.logging.info(f"Received responses: {responses}")
@@ -45,6 +45,8 @@ class Validator(BaseValidatorNeuron):
         # self.update_scores(rewards, miner_uids)
 
     def score_response(self, synapse: Dummy) -> float:
+        if synapse.dummy_output is None:
+            return 0.0
         return 1.0 if synapse.dummy_output == synapse.dummy_input * 2 else 0.0
 
     def score_responses(self, responses: List[Dummy]) -> torch.FloatTensor:
