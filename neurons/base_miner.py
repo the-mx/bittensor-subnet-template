@@ -357,8 +357,8 @@ class BaseMinerNeuron(ABC):
         )
 
         parser.add_argument(
-            "--blacklist.allow_non_registered",
-            action="store_true",
-            help="If set, miners will accept queries from non registered entities. (Dangerous!)",
-            default=False,
+            "--blacklist.min_stake",
+            type=int,
+            help="Minimal validator stake to send requests",
+            default=0,
         )

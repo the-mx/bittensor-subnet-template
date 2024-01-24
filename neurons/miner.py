@@ -17,32 +17,42 @@ class Miner(BaseMinerNeuron):
         return synapse
 
     async def blacklist(self, synapse: protocol.Dummy) -> typing.Tuple[bool, str]:
-        # TODO: check stake and other
-        # if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
-        #     # Ignore requests from unrecognized entities.
-        #     bt.logging.trace(
-        #         f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
-        #     )
-        #     return True, "Unrecognized hotkey"
-        #
-        # bt.logging.trace(
-        #     f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
-        # )
-        return False, "Hotkey recognized!"
+        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
+            bt.logging.trace(
+                f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
+            )
+            return True, "Unrecognized hotkey"
+
+        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        if (
+            self.config.blacklist.force_validator_permit
+            and not self.metagraph.validator_permit[uid]
+        ):
+            bt.logging.debug(
+                f"Blacklisting validator without the permit {synapse.dendrite.hotkey}"
+            )
+            return True, "No validator permit"
+
+        if self.metagraph.S[uid] < self.config.blacklist.min_stake:
+            bt.logging.debug(
+                f"Blacklisting - not enough stake {synapse.dendrite.hotkey} "
+                f"with {self.metagraph.S[uid]} TAO "
+            )
+            return True, "No validator permit"
+
+        return False, "OK"
 
     async def priority(self, synapse: protocol.Dummy) -> float:
-        return 1.0
-        # # TODO(developer): Define how miners should prioritize requests.
-        # caller_uid = self.metagraph.hotkeys.index(
-        #     synapse.dendrite.hotkey
-        # )  # Get the caller index.
-        # prirority = float(
-        #     self.metagraph.S[caller_uid]
-        # )  # Return the stake as the priority.
-        # bt.logging.trace(
-        #     f"Prioritizing {synapse.dendrite.hotkey} with value: ", prirority
-        # )
-        # return prirority
+        try:
+            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        except ValueError:
+            bt.logging.error(
+                f"Unregistered caller for priority calculation: {synapse.dendrite.hotkey}"
+            )
+            return 0.0
+
+        bt.logging.debug(f"DELETE {float(self.metagraph.S[uid])}")
+        return float(self.metagraph.S[uid])
 
 
 def main():

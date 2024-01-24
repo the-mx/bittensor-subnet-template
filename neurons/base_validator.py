@@ -495,10 +495,3 @@ class BaseValidatorNeuron(ABC):
             help="Set this flag to not attempt to serve an Axon.",
             default=False,
         )
-
-        parser.add_argument(
-            "--neuron.vpermit_tao_limit",
-            type=int,
-            help="The maximum number of TAO allowed to query a validator with a vpermit.",
-            default=4096,
-        )
