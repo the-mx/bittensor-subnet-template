@@ -18,9 +18,9 @@ from config import check_config
 __version__ = "0.0.1"
 version_split = __version__.split(".")
 __spec_version__ = (
-        (1000 * int(version_split[0]))
-        + (10 * int(version_split[1]))
-        + (1 * int(version_split[2]))
+    (1000 * int(version_split[0]))
+    + (10 * int(version_split[1]))
+    + (1 * int(version_split[2]))
 )
 
 
@@ -78,8 +78,8 @@ class BaseValidatorNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-                self.device.type.lower().startswith("cuda")
-                and not torch.cuda.is_available()
+            self.device.type.lower().startswith("cuda")
+            and not torch.cuda.is_available()
         ):
             raise RuntimeError(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -169,7 +169,7 @@ class BaseValidatorNeuron(ABC):
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
         self.scores: torch.FloatTensor = alpha * scattered_scores + (
-                1 - alpha
+            1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
@@ -199,8 +199,8 @@ class BaseValidatorNeuron(ABC):
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
-                netuid=self.config.netuid,
-                hotkey_ss58=self.wallet.hotkey.ss58_address,
+            netuid=self.config.netuid,
+            hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             raise RuntimeError(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
@@ -301,10 +301,11 @@ class BaseValidatorNeuron(ABC):
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
         bt.logging.debug(
-            f"EXTRA: {self.block()} - {self.metagraph.last_update[self.uid]} ? {self.config.neuron.epoch_length}")
+            f"EXTRA: {self.block()} - {self.metagraph.last_update[self.uid]} ? {self.config.neuron.epoch_length}"
+        )
 
         return (
-                self.block() - self.metagraph.last_update[self.uid]
+            self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
 
     def _resync_metagraph(self):
@@ -344,7 +345,7 @@ class BaseValidatorNeuron(ABC):
 
         # Define appropriate logic for when set weights.
         return (
-                self.block() - self.metagraph.last_update[self.uid]
+            self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
 
     def _serve_axon(self):
@@ -380,9 +381,7 @@ class BaseValidatorNeuron(ABC):
 
         # Calculate the average reward for each uid across non-zero values.
         # Replace any NaN values with 0.
-        raw_weights = torch.nn.functional.normalize(
-            self.scores, p=1, dim=0
-        )
+        raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0)
 
         bt.logging.debug(f"Raw weights: {raw_weights}")
 

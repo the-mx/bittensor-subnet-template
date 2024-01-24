@@ -22,7 +22,6 @@ import bittensor as bt
 import torch
 
 from template import __spec_version__ as spec_version
-from template.utils.config import add_args, check_config, config
 from template.utils.misc import ttl_get_block
 
 
@@ -36,10 +35,6 @@ class BaseNeuron(ABC):
     @classmethod
     def check_config(cls, config: "bt.Config"):
         check_config(cls, config)
-
-    @classmethod
-    def add_args(cls, parser):
-        add_args(cls, parser)
 
     @classmethod
     def config(cls):

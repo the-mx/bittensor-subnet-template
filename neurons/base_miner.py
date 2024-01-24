@@ -1,21 +1,5 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
 import asyncio
+import argparse
 import threading
 import time
 import traceback
@@ -23,16 +7,10 @@ import traceback
 import bittensor as bt
 import torch
 
-from template.base.neuron import BaseNeuron
 
-
-class BaseMinerNeuron(BaseNeuron):
-    """
-    Base class for Bittensor miners.
-    """
-
-    def __init__(self, config=None):
-        super().__init__(config=config)
+class BaseMinerNeuron():
+    def __init__(self, config: bt.config):
+        return
 
         # Warn if allowing incoming requests from anyone.
         if not self.config.blacklist.force_validator_permit:
@@ -104,8 +82,8 @@ class BaseMinerNeuron(BaseNeuron):
         try:
             while not self.should_exit:
                 while (
-                    self.block - self.metagraph.last_update[self.uid]
-                    < self.config.neuron.epoch_length
+                        self.block - self.metagraph.last_update[self.uid]
+                        < self.config.neuron.epoch_length
                 ):
                     # Wait before checking again.
                     time.sleep(1)
@@ -201,7 +179,7 @@ class BaseMinerNeuron(BaseNeuron):
             )
 
         except Exception as e:
-            bt.logging.error(f"Failed to set weights on chain with exception: { e }")
+            bt.logging.error(f"Failed to set weights on chain with exception: {e}")
 
         bt.logging.info(f"Set weights: {chain_weights}")
 
@@ -211,3 +189,60 @@ class BaseMinerNeuron(BaseNeuron):
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
+
+    @staticmethod
+    def add_args(parser: argparse.ArgumentParser):
+        """
+        Add Miner specific arguments.
+        """
+        # Netuid Arg: The netuid of the subnet to connect to.
+        parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
+
+        parser.add_argument(
+            "--neuron.name",
+            type=str,
+            help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
+            default="miner",
+        )
+
+        parser.add_argument(
+            "--neuron.device",
+            type=str,
+            help="Device to run on (cpu/cuda:%d).",
+            default="cpu",
+        )
+
+        parser.add_argument(
+            "--neuron.epoch_length",
+            type=int,
+            help="The default epoch length (how often we set weights, measured in 12 second blocks).",
+            default=100,
+        )
+
+        parser.add_argument(
+            "--neuron.events_retention_size",
+            type=str,
+            help="Events retention size.",
+            default="2 GB",
+        )
+
+        parser.add_argument(
+            "--neuron.dont_save_events",
+            action="store_true",
+            help="If set, we dont save events to a log file.",
+            default=False,
+        )
+
+        parser.add_argument(
+            "--blacklist.force_validator_permit",
+            action="store_true",
+            help="If set, we will force incoming requests to have a permit.",
+            default=False,
+        )
+
+        parser.add_argument(
+            "--blacklist.allow_non_registered",
+            action="store_true",
+            help="If set, miners will accept queries from non registered entities. (Dangerous!)",
+            default=False,
+        )
