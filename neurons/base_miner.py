@@ -1,15 +1,18 @@
-import asyncio
+import abc
 import argparse
 import copy
 import threading
 import time
-import traceback
+import typing
 from abc import ABC
 
 import bittensor as bt
+import bittensor.utils.weight_utils
 import torch
-
 from config import check_config
+from version import __spec_version__
+
+from neurons import protocol
 
 
 class BaseMinerNeuron(ABC):
@@ -28,6 +31,20 @@ class BaseMinerNeuron(ABC):
     axon: bt.axon | None = None
     """Axon for external connections."""
 
+    is_background_thread_running: bool = False
+    """Indicates whether background thread is running."""
+    should_stop_background_thread: bool = False
+    """When set background thread is supposed to stop."""
+    should_exit: threading.Event
+    """Set in the background thread on errors. Should lead to the application stop."""
+    thread: threading.Thread | None = None
+    """Background thread."""
+
+    _cached_block: int = 0
+    _cached_block_time: float = 0.0
+    _cached_block_ttl: float = 12.0
+    """Not to request the current block on each validator tick, it's value is cached for the next `ttl` seconds."""
+
     def __init__(self, config: bt.config):
         self.config: bt.config = copy.deepcopy(config)
         check_config(config)
@@ -35,8 +52,8 @@ class BaseMinerNeuron(ABC):
 
         self.device = torch.device(self.config.neuron.device)
         if (
-                self.device.type.lower().startswith("cuda")
-                and not torch.cuda.is_available()
+            self.device.type.lower().startswith("cuda")
+            and not torch.cuda.is_available()
         ):
             raise RuntimeError(
                 f"{self.device.type} device is selected while CUDA is not available"
@@ -77,84 +94,121 @@ class BaseMinerNeuron(ABC):
 
         bt.logging.info(f"Attaching forward function to the miner axon.")
 
-        # self.axon.attach(
-        #     forward_fn=self.forward,
-        #     blacklist_fn=self.blacklist,
-        #     priority_fn=self.priority,
-        # )
+        self.axon.attach(
+            forward_fn=self.forward,
+            blacklist_fn=self.blacklist,
+            priority_fn=self.priority,
+        )
 
         bt.logging.info(f"Axon created: {self.axon}")
 
-        # self.should_exit: bool = False
-        # self.is_running: bool = False
-        # self.thread: threading.Thread = None
-        # self.lock = asyncio.Lock()
+        self.should_exit = threading.Event()
 
-    def run(self):
+    def __enter__(self):
+        self._run_in_background_thread()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._stop_background_thread()
+
+    @abc.abstractmethod
+    def forward(self, synapse: protocol.Dummy) -> protocol.Dummy:
+        ...
+
+    @abc.abstractmethod
+    def blacklist(self, synapse: protocol.Dummy) -> typing.Tuple[bool, str]:
+        ...
+
+    @abc.abstractmethod
+    def priority(self, synapse: protocol.Dummy) -> float:
+        ...
+
+    def block(self):
+        cur_time = time.time()
+        if cur_time > self._cached_block_time + self._cached_block_ttl:
+            self._cached_block = self.subtensor.get_current_block()
+            self._cached_block_time = cur_time
+
+        return self._cached_block
+
+    def _run_in_background_thread(self):
         """
-        Initiates and manages the main loop for the miner on the Bittensor network. The main loop handles graceful shutdown on keyboard interrupts and logs unforeseen errors.
+        Starts the miner's operations in a background thread upon entering the context.
+        This method facilitates the use of the validator in a 'with' statement.
+        """
+        if self.is_background_thread_running:
+            return
+        bt.logging.debug("Starting miner in a background thread.")
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        self.should_stop_background_thread = False
+        self.is_background_thread_running = True
+        bt.logging.debug("Background thread started.")
 
-        This function performs the following primary tasks:
-        1. Check for registration on the Bittensor network.
-        2. Starts the miner's axon, making it active on the network.
-        3. Periodically resynchronizes with the chain; updating the metagraph with the latest network state and setting weights.
+    def _stop_background_thread(self):
+        """
+        Stops the miner's background operations.
+        """
+        if not self.is_background_thread_running:
+            return
+        bt.logging.debug("Stopping the miner background thread.")
+        self.should_stop_background_thread = True
+        self.thread.join(30)
+        self.is_background_thread_running = False
+        if self.axon is not None:
+            self.axon.stop()
+        bt.logging.debug("Background thread stopped.")
 
-        The miner continues its operations until `should_exit` is set to True or an external interruption occurs.
-        During each epoch of its operation, the miner waits for new blocks on the Bittensor network, updates its
-        knowledge of the network (metagraph), and sets its weights. This process ensures the miner remains active
-        and up-to-date with the network's latest state.
+    def _run(self):
+        """
+        Manages the Bittensor miner's main loop, which ensures an orderly shutdown during keyboard interrupts
+        and logs unexpected errors.
 
-        Note:
-            - The function leverages the global configurations set during the initialization of the miner.
-            - The miner's axon serves as its interface to the Bittensor network, handling incoming and outgoing requests.
+        Primary responsibilities include:
+        1. Verifying Bittensor network registration.
+        2. Initiating the miner's axon to participate in the network.
+        3. Updating the metagraph periodically to sync with the latest chain state and adjust weights.
+
+        Operation continues until 'should_stop_background_thread' is set to True or an external
+        interruption is received. In each epoch, the miner:
+        - Monitors for new network blocks,
+        - Refreshes its view of the network via the metagraph,
+        - Updates its weights to reflect the current network dynamics,
+        ensuring the miner's active and current standing within the network.
+
+        Notes:
+        - It relies on global configuration from miner initialization.
+        - The miner's axon serves as the point of contact for network communication.
 
         Raises:
-            KeyboardInterrupt: If the miner is stopped by a manual interruption.
-            Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
+        - KeyboardInterrupt: On manual intervention.
+        - Exception: For other unexpected issues during operation, with logs captured for debugging.
         """
 
-        # Check that miner is registered on the network.
-        self.sync()
-
-        # Serve passes the axon information to the network + netuid we are hosting on.
-        # This will auto-update if the axon port of external ip have changed.
-        bt.logging.info(
-            f"Serving miner axon {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
-        )
         self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
-
-        # Start  starts the miner's axon, making it active on the network.
         self.axon.start()
 
-        bt.logging.info(f"Miner starting at block: {self.block}")
+        bt.logging.info(
+            f"Serving miner axon {self.axon} on network: {self.config.subtensor.chain_endpoint} "
+            f"with netuid: {self.config.netuid}"
+        )
 
-        # This loop maintains the miner's operations until intentionally stopped.
+        bt.logging.info(f"Miner starting at block: {self.block()}")
+
         try:
-            while not self.should_exit:
-                while (
-                        self.block - self.metagraph.last_update[self.uid]
-                        < self.config.neuron.epoch_length
-                ):
-                    # Wait before checking again.
-                    time.sleep(1)
+            while True:
+                self._sync()
 
-                    # Check if we should exit.
-                    if self.should_exit:
-                        break
+                if self.should_stop_background_thread:
+                    break
 
-                # Sync metagraph and potentially set weights.
-                self.sync()
-                self.step += 1
-
-        # If someone intentionally stops the miner, it'll safely terminate operations.
+                time.sleep(10)
         except KeyboardInterrupt:
-            self.axon.stop()
+            self.should_exit.set()
             bt.logging.success("Miner killed by keyboard interrupt.")
-            exit()
-
-        # In case of unforeseen errors, the miner will log the error and continue operations.
         except Exception as e:
-            bt.logging.error(traceback.format_exc())
+            self.should_exit.set()
+            bt.logging.exception(f"Error during validation: {e}")
 
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
@@ -166,90 +220,91 @@ class BaseMinerNeuron(ABC):
                 f" Please register the hotkey using `btcli subnets register` before trying again."
             )
 
-    def run_in_background_thread(self):
-        """
-        Starts the miner's operations in a separate background thread.
-        This is useful for non-blocking operations.
-        """
-        if not self.is_running:
-            bt.logging.debug("Starting miner in background thread.")
-            self.should_exit = False
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
-            self.is_running = True
-            bt.logging.debug("Started")
+    def _sync(self):
+        # Ensure miner or validator hotkey is still registered on the network.
+        self._check_for_registration()
 
-    def stop_run_thread(self):
-        """
-        Stops the miner's operations that are running in the background thread.
-        """
-        if self.is_running:
-            bt.logging.debug("Stopping miner in background thread.")
-            self.should_exit = True
-            self.thread.join(5)
-            self.is_running = False
-            bt.logging.debug("Stopped")
+        if self._should_sync_metagraph():
+            self._resync_metagraph()
 
-    def __enter__(self):
-        """
-        Starts the miner's operations in a background thread upon entering the context.
-        This method facilitates the use of the miner in a 'with' statement.
-        """
-        # self.run_in_background_thread()
-        return self
+        if self._should_set_weights():
+            self._set_weights()
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def _should_sync_metagraph(self) -> bool:
         """
-        Stops the miner's background operations upon exiting the context.
-        This method facilitates the use of the miner in a 'with' statement.
-
-        Args:
-            exc_type: The type of the exception that caused the context to be exited.
-                      None if the context was exited without an exception.
-            exc_value: The instance of the exception that caused the context to be exited.
-                       None if the context was exited without an exception.
-            traceback: A traceback object encoding the stack trace.
-                       None if the context was exited without an exception.
+        Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
-        # self.stop_run_thread()
-        pass
+        bt.logging.debug(
+            f"EXTRA: {self.block()} - {self.metagraph.last_update[self.uid]} ? {self.config.neuron.epoch_length}"
+        )
 
-    def set_weights(self):
+        return (
+            self.block() - self.metagraph.last_update[self.uid]
+        ) > self.config.neuron.epoch_length
+
+    def _resync_metagraph(self):
+        """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
+
+        bt.logging.info("Resyncing metagraph")
+
+        self.metagraph.sync(subtensor=self.subtensor)
+
+    def _should_set_weights(self) -> bool:
+        # Check if enough epoch blocks have elapsed since the last epoch.
+        if self.config.neuron.disable_set_weights:
+            return False
+
+        # Define appropriate logic for when set weights.
+        return (
+            self.block() - self.metagraph.last_update[self.uid]
+        ) > self.config.neuron.epoch_length
+
+    def _set_weights(self):
         """
         Self-assigns a weight of 1 to the current miner (identified by its UID) and
-        a weight of 0 to all other peers in the network. The weights determine the trust level the miner assigns to other nodes on the network.
-
-        Raises:
-            Exception: If there's an error while setting weights, the exception is logged for diagnosis.
+        a weight of 0 to all other peers in the network.
+        The weights determine the trust level the miner assigns to other nodes on the network.
         """
-        try:
-            # --- query the chain for the most current number of peers on the network
-            chain_weights = torch.zeros(
-                self.subtensor.subnetwork_n(netuid=self.metagraph.netuid)
-            )
-            chain_weights[self.uid] = 1
+        weights = torch.zeros(self.metagraph.n, dtype=torch.float)
+        weights[self.uid] = 1.0
 
-            # --- Set weights.
-            self.subtensor.set_weights(
-                wallet=self.wallet,
-                netuid=self.metagraph.netuid,
-                uids=torch.arange(0, len(chain_weights)),
-                weights=chain_weights.to("cpu"),
-                wait_for_inclusion=False,
-                version_key=self.spec_version,
-            )
+        (
+            processed_weight_uids,
+            processed_weights,
+        ) = bt.utils.weight_utils.process_weights_for_netuid(
+            uids=self.metagraph.uids.to("cpu"),
+            weights=weights.to("cpu"),
+            netuid=self.config.netuid,
+            subtensor=self.subtensor,
+            metagraph=self.metagraph,
+        )
 
-        except Exception as e:
-            bt.logging.error(f"Failed to set weights on chain with exception: {e}")
+        bt.logging.debug(f"Processed weights: {processed_weights}")
 
-        bt.logging.info(f"Set weights: {chain_weights}")
+        (
+            converted_uids,
+            converted_weights,
+        ) = bt.utils.weight_utils.convert_weights_and_uids_for_emit(
+            uids=processed_weight_uids, weights=processed_weights
+        )
 
-    def resync_metagraph(self):
-        """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
-        bt.logging.info("resync_metagraph()")
+        bt.logging.debug(f"Converted weights: {converted_weights}")
+        bt.logging.debug(f"Converted uids: {converted_uids}")
 
-        # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
+        result = self.subtensor.set_weights(
+            wallet=self.wallet,
+            netuid=self.config.netuid,
+            uids=converted_uids,
+            weights=converted_weights,
+            wait_for_finalization=False,
+            wait_for_inclusion=True,
+            version_key=__spec_version__,
+        )
+
+        if result is True:
+            bt.logging.info("Weights set on chain successfully")
+        else:
+            bt.logging.error("Weights set failed")
 
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):

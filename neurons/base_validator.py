@@ -1,18 +1,17 @@
 import abc
-import asyncio
 import argparse
+import asyncio
 import copy
+import os
 import random
 import threading
 import time
-import os
 from abc import ABC
 from typing import List
 
 import bittensor as bt
-from bittensor.utils import weight_utils
 import torch
-
+from bittensor.utils import weight_utils
 from config import check_config
 from version import __spec_version__
 
@@ -190,6 +189,22 @@ class BaseValidatorNeuron(ABC):
         self.scores = state["scores"]
         self.hotkeys = state["hotkeys"]
 
+    def _serve_axon(self):
+        bt.logging.info("Axon is on...")
+        try:
+            self.axon = bt.axon(wallet=self.wallet, config=self.config)
+        except Exception as e:
+            bt.logging.error(f"Failed to create Axon. Initialized with exception: {e}")
+            return
+
+        try:
+            self.subtensor.serve_axon(
+                netuid=self.config.netuid,
+                axon=self.axon,
+            )
+        except Exception as e:
+            bt.logging.error(f"Failed to serve Axon with exception: {e}")
+
     def _check_for_registration(self):
         if not self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
@@ -289,7 +304,7 @@ class BaseValidatorNeuron(ABC):
         # Always save state.
         self.save_state()
 
-    def _should_sync_metagraph(self):
+    def _should_sync_metagraph(self) -> bool:
         """
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
@@ -340,22 +355,6 @@ class BaseValidatorNeuron(ABC):
         return (
             self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
-
-    def _serve_axon(self):
-        bt.logging.info("Axon is on...")
-        try:
-            self.axon = bt.axon(wallet=self.wallet, config=self.config)
-        except Exception as e:
-            bt.logging.error(f"Failed to create Axon. Initialized with exception: {e}")
-            return
-
-        try:
-            self.subtensor.serve_axon(
-                netuid=self.config.netuid,
-                axon=self.axon,
-            )
-        except Exception as e:
-            bt.logging.error(f"Failed to serve Axon with exception: {e}")
 
     def _set_weights(self):
         """

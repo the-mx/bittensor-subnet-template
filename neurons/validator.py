@@ -3,10 +3,10 @@ from typing import List
 
 import bittensor as bt
 import torch
-
-from neurons.base_validator import BaseValidatorNeuron
 from config import read_config
 from protocol import Dummy
+
+from neurons.base_validator import BaseValidatorNeuron
 
 
 class Validator(BaseValidatorNeuron):
