@@ -234,10 +234,6 @@ class BaseMinerNeuron(ABC):
         """
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
-        bt.logging.debug(
-            f"EXTRA: {self.block()} - {self.metagraph.last_update[self.uid]} ? {self.config.neuron.epoch_length}"
-        )
-
         return (
             self.block() - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length

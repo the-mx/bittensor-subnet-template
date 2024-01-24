@@ -51,7 +51,6 @@ class Miner(BaseMinerNeuron):
             )
             return 0.0
 
-        bt.logging.debug(f"DELETE {float(self.metagraph.S[uid])}")
         return float(self.metagraph.S[uid])
 
 
