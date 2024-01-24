@@ -115,7 +115,8 @@ def main():
     config = read_config(Miner)
     bt.logging.info(f"Starting with config: {config}")
 
-    # with Miner() as miner:
+    with Miner(config) as miner:
+        pass
     #     while True:
     #         bt.logging.info("Miner running...", time.time())
     #         time.sleep(60)

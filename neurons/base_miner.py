@@ -1,44 +1,94 @@
 import asyncio
 import argparse
+import copy
 import threading
 import time
 import traceback
+from abc import ABC
 
 import bittensor as bt
 import torch
 
+from config import check_config
 
-class BaseMinerNeuron():
+
+class BaseMinerNeuron(ABC):
+    config: bt.config
+    """Copy of the original config."""
+    uid: int
+    """Each miner gets a unique identity (UID) in the network for differentiation."""
+    device: torch.device
+    """Device to run computations on."""
+    wallet: bt.wallet
+    """The wallet holds the cryptographic key pairs for the miner."""
+    subtensor: bt.subtensor
+    """The subtensor is our connection to the Bittensor blockchain."""
+    metagraph: bt.metagraph
+    """The metagraph holds the state of the network, letting us know about other validators and miners."""
+    axon: bt.axon | None = None
+    """Axon for external connections."""
+
     def __init__(self, config: bt.config):
-        return
+        self.config: bt.config = copy.deepcopy(config)
+        check_config(config)
+        bt.logging(config=config, logging_dir=config.full_path)
+
+        self.device = torch.device(self.config.neuron.device)
+        if (
+                self.device.type.lower().startswith("cuda")
+                and not torch.cuda.is_available()
+        ):
+            raise RuntimeError(
+                f"{self.device.type} device is selected while CUDA is not available"
+            )
+
+        self.wallet = bt.wallet(config=self.config)
+        bt.logging.info(f"Wallet: {self.wallet}")
+
+        self.subtensor = bt.subtensor(config=self.config)
+        bt.logging.info(f"Subtensor: {self.subtensor}")
+
+        self._check_for_registration()
+
+        self.metagraph = bt.metagraph(
+            netuid=self.config.netuid, network=self.subtensor.network, sync=False
+        )  # Make sure not to sync without passing subtensor
+        self.metagraph.sync(subtensor=self.subtensor)  # Sync metagraph with subtensor.
+        bt.logging.info(f"Metagraph: {self.metagraph}")
+
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        bt.logging.info(
+            f"Running neuron on subnet {self.config.netuid} with uid {self.uid} "
+            f"using network: {self.subtensor.chain_endpoint}"
+        )
 
         # Warn if allowing incoming requests from anyone.
         if not self.config.blacklist.force_validator_permit:
             bt.logging.warning(
                 "You are allowing non-validators to send requests to your miner. This is a security risk."
             )
+
         if self.config.blacklist.allow_non_registered:
             bt.logging.warning(
                 "You are allowing non-registered entities to send requests to your miner. This is a security risk."
             )
 
-        # The axon handles request processing, allowing validators to send this miner requests.
         self.axon = bt.axon(wallet=self.wallet, port=self.config.axon.port)
 
-        # Attach determiners which functions are called when servicing a request.
-        bt.logging.info(f"Attaching forward function to miner axon.")
-        self.axon.attach(
-            forward_fn=self.forward,
-            blacklist_fn=self.blacklist,
-            priority_fn=self.priority,
-        )
+        bt.logging.info(f"Attaching forward function to the miner axon.")
+
+        # self.axon.attach(
+        #     forward_fn=self.forward,
+        #     blacklist_fn=self.blacklist,
+        #     priority_fn=self.priority,
+        # )
+
         bt.logging.info(f"Axon created: {self.axon}")
 
-        # Instantiate runners
-        self.should_exit: bool = False
-        self.is_running: bool = False
-        self.thread: threading.Thread = None
-        self.lock = asyncio.Lock()
+        # self.should_exit: bool = False
+        # self.is_running: bool = False
+        # self.thread: threading.Thread = None
+        # self.lock = asyncio.Lock()
 
     def run(self):
         """
@@ -106,6 +156,16 @@ class BaseMinerNeuron():
         except Exception as e:
             bt.logging.error(traceback.format_exc())
 
+    def _check_for_registration(self):
+        if not self.subtensor.is_hotkey_registered(
+            netuid=self.config.netuid,
+            hotkey_ss58=self.wallet.hotkey.ss58_address,
+        ):
+            raise RuntimeError(
+                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
+                f" Please register the hotkey using `btcli subnets register` before trying again."
+            )
+
     def run_in_background_thread(self):
         """
         Starts the miner's operations in a separate background thread.
@@ -135,7 +195,7 @@ class BaseMinerNeuron():
         Starts the miner's operations in a background thread upon entering the context.
         This method facilitates the use of the miner in a 'with' statement.
         """
-        self.run_in_background_thread()
+        # self.run_in_background_thread()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -151,7 +211,8 @@ class BaseMinerNeuron():
             traceback: A traceback object encoding the stack trace.
                        None if the context was exited without an exception.
         """
-        self.stop_run_thread()
+        # self.stop_run_thread()
+        pass
 
     def set_weights(self):
         """
