@@ -101,7 +101,7 @@ class BaseValidatorNeuron(ABC):
         )
 
         # # Set up initial scores.
-        self.scores = torch.zeros(self.metagraph.n, device=self.device)
+        self.scores = torch.zeros(self.metagraph.n).to(self.device)
         self.hotkeys = list(self.metagraph.hotkeys)
 
         # Serve axon to enable external connections.
@@ -153,7 +153,7 @@ class BaseValidatorNeuron(ABC):
         # Compute forward pass rewards, assumes uids are mutually exclusive.
         # shape: [ metagraph.n ]
         scattered_scores: torch.FloatTensor = self.scores.scatter(
-            0, torch.tensor(miner_uids, device=self.device), scores
+            0, torch.tensor(miner_uids).to(self.device), scores
         ).to(self.device)
         bt.logging.debug(f"Scattered rewards: {scattered_scores}")
 
@@ -330,7 +330,7 @@ class BaseValidatorNeuron(ABC):
         }
         bt.logging.debug(f"Prev scores {prev_hotkey_to_score}")
 
-        new_scores = torch.zeros(self.metagraph.n, device=self.device)
+        new_scores = torch.zeros(self.metagraph.n).to(self.device)
 
         # Populate score values based on the previous hotkeys.
         for uid, axon in enumerate(self.metagraph.axons):

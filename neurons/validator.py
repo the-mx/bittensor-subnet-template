@@ -48,8 +48,8 @@ class Validator(BaseValidatorNeuron):
 
     def score_responses(self, responses: List[Dummy]) -> torch.FloatTensor:
         return torch.FloatTensor(
-            [self.score_response(synapse) for synapse in responses], device=self.device
-        )
+            [self.score_response(synapse) for synapse in responses]
+        ).to(self.device)
 
 
 def main():
