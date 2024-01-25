@@ -323,6 +323,8 @@ class BaseValidatorNeuron(ABC):
 
         bt.logging.info("Metagraph updated, re-syncing hotkeys and moving averages")
 
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+
         prev_hotkey_to_score = {
             hotkey: self.scores[uid] for uid, hotkey in enumerate(self.hotkeys)
         }
