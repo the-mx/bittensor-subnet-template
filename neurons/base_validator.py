@@ -345,6 +345,7 @@ class BaseValidatorNeuron(ABC):
 
         # Replace old score tensor with the new tensor.
         self.scores = new_scores
+        self.hotkeys = list(self.metagraph.hotkeys)
 
         bt.logging.debug(f"New scores {self.scores}")
 
