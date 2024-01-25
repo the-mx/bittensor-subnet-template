@@ -150,8 +150,6 @@ class BaseValidatorNeuron(ABC):
     def update_scores(self, scores: torch.FloatTensor, miner_uids: List[int]):
         """Updates moving average scores based on the recent received scores"""
 
-        bt.logging.debug(f"DEBUG: {miner_uids}, {scores}, {self.scores}, {self.hotkeys}")
-
         # Check if rewards contains NaN values.
         if torch.isnan(scores).any():
             bt.logging.warning(f"NaN values detected in rewards: {scores}")
