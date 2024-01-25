@@ -116,6 +116,11 @@ class BaseValidatorNeuron(ABC):
         # Create asyncio event loop to manage async tasks.
         self.loop = asyncio.get_event_loop()
 
+        self._load_state()
+
+        # It's important to resync metagraph, there could have been changes since the last save.
+        self._resync_metagraph()
+
     def __enter__(self):
         self._run_in_background_thread()
         return self
@@ -145,6 +150,8 @@ class BaseValidatorNeuron(ABC):
     def update_scores(self, scores: torch.FloatTensor, miner_uids: List[int]):
         """Updates moving average scores based on the recent received scores"""
 
+        bt.logging.debug(f"DEBUG: {miner_uids}, {scores}, {self.scores}, {self.hotkeys}")
+
         # Check if rewards contains NaN values.
         if torch.isnan(scores).any():
             bt.logging.warning(f"NaN values detected in rewards: {scores}")
@@ -166,7 +173,7 @@ class BaseValidatorNeuron(ABC):
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
-    def save_state(self):
+    def _save_state(self):
         bt.logging.info("Saving validator state.")
 
         torch.save(
@@ -178,7 +185,7 @@ class BaseValidatorNeuron(ABC):
             self.config.neuron.full_path + "/state.pt",
         )
 
-    def load_state(self):
+    def _load_state(self):
         bt.logging.info("Loading validator state.")
 
         if not os.path.exists(self.config.neuron.full_path + "/state.pt"):
@@ -304,7 +311,7 @@ class BaseValidatorNeuron(ABC):
             self._set_weights()
 
         # Always save state.
-        self.save_state()
+        self._save_state()
 
     def _should_sync_metagraph(self) -> bool:
         """
