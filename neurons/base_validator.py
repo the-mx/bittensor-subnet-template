@@ -159,6 +159,8 @@ class BaseValidatorNeuron(ABC):
         scores = scores.to(self.device)
         bt.logging.debug(f"scores: {scores}, {scores.device}")
 
+        bt.logging.debug(f"self.scores: {self.scores}, {self.scores.device}")
+
         scattered_scores: torch.FloatTensor = self.scores.scatter(
             0, index, scores
         )  # .to(self.device)
@@ -167,7 +169,7 @@ class BaseValidatorNeuron(ABC):
         # Update scores with rewards produced by this step.
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
-        self.scores: torch.FloatTensor = alpha * scattered_scores + (
+        self.scores = alpha * scattered_scores + (
             1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
@@ -193,7 +195,7 @@ class BaseValidatorNeuron(ABC):
 
         state = torch.load(self.config.neuron.full_path + "/state.pt")
         self.step = state["step"]
-        self.scores = state["scores"]
+        self.scores = state["scores"].to(self.device)
         self.hotkeys = state["hotkeys"]
 
     def _serve_axon(self):
