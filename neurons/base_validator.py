@@ -8,6 +8,7 @@ import threading
 import time
 from abc import ABC
 from typing import List
+from traceback import print_exception
 
 import bittensor as bt
 import torch
@@ -284,6 +285,7 @@ class BaseValidatorNeuron(ABC):
         except Exception as e:
             self.should_exit.set()
             bt.logging.exception(f"Error during validation: {e}")
+            bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
     async def _concurrent_forward(self):
         coroutines = [
