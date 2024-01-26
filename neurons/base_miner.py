@@ -112,15 +112,15 @@ class BaseMinerNeuron(ABC):
         self._stop_background_thread()
 
     @abc.abstractmethod
-    def forward(self, synapse: protocol.Dummy) -> protocol.Dummy:
+    def forward(self, synapse: protocol.Task404) -> protocol.Task404:
         ...
 
     @abc.abstractmethod
-    def blacklist(self, synapse: protocol.Dummy) -> typing.Tuple[bool, str]:
+    def blacklist(self, synapse: protocol.Task404) -> typing.Tuple[bool, str]:
         ...
 
     @abc.abstractmethod
-    def priority(self, synapse: protocol.Dummy) -> float:
+    def priority(self, synapse: protocol.Task404) -> float:
         ...
 
     def block(self):

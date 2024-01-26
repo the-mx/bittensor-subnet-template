@@ -12,11 +12,11 @@ class Miner(BaseMinerNeuron):
     def __init__(self, config: bt.config):
         super(Miner, self).__init__(config=config)
 
-    async def forward(self, synapse: protocol.Dummy) -> protocol.Dummy:
+    async def forward(self, synapse: protocol.Task404) -> protocol.Task404:
         synapse.dummy_output = synapse.dummy_input * 2
         return synapse
 
-    async def blacklist(self, synapse: protocol.Dummy) -> typing.Tuple[bool, str]:
+    async def blacklist(self, synapse: protocol.Task404) -> typing.Tuple[bool, str]:
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
             bt.logging.trace(
                 f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
@@ -42,7 +42,7 @@ class Miner(BaseMinerNeuron):
 
         return False, "OK"
 
-    async def priority(self, synapse: protocol.Dummy) -> float:
+    async def priority(self, synapse: protocol.Task404) -> float:
         try:
             uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         except ValueError:

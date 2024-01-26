@@ -3,7 +3,7 @@ import typing
 import bittensor as bt
 
 
-class Dummy(bt.Synapse):
+class Task404(bt.Synapse):
     # Required request input, filled by sending dendrite caller.
     dummy_input: int
 

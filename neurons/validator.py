@@ -4,7 +4,7 @@ from typing import List
 import bittensor as bt
 import torch
 from config import read_config
-from protocol import Dummy
+from protocol import Task404
 
 from neurons.base_validator import BaseValidatorNeuron
 
@@ -27,7 +27,7 @@ class Validator(BaseValidatorNeuron):
         # TODO: move probe creation to a separate module
         responses = await self.dendrite.forward(
             axons=[self.metagraph.axons[uid] for uid in miner_uids],
-            synapse=Dummy(dummy_input=self.step),
+            synapse=Task404(dummy_input=self.step),
             deserialize=False,
         )
 
@@ -40,12 +40,12 @@ class Validator(BaseValidatorNeuron):
 
         self.update_scores(scores, miner_uids)
 
-    def score_response(self, synapse: Dummy) -> float:
+    def score_response(self, synapse: Task404) -> float:
         if synapse.dummy_output is None:
             return 0.0
         return 1.0 if synapse.dummy_output == synapse.dummy_input * 2 else 0.0
 
-    def score_responses(self, responses: List[Dummy]) -> torch.FloatTensor:
+    def score_responses(self, responses: List[Task404]) -> torch.FloatTensor:
         return torch.FloatTensor(
             [self.score_response(synapse) for synapse in responses]
         ).to(self.device)
